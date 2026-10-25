@@ -172,6 +172,53 @@ class TestUtilities(unittest.TestCase):
         self.assertAlmostEqual(electric["amount"], round(expected, 2), places=2)
 
 
+class TestPhotoFeatures(unittest.TestCase):
+    """Features the model reports seeing in listing photos adjust the
+    electricity estimate. The direction of each has to be right and the
+    combined effect has to stay bounded."""
+
+    def test_no_features_means_no_adjustment(self):
+        factor, reasons = main.feature_adjustment([])
+        self.assertEqual(factor, 1.0)
+        self.assertEqual(reasons, [])
+
+    def test_resistance_heat_raises_the_estimate(self):
+        plain, _ = main.utilities_for(2, [], "VA")
+        heated, _ = main.utilities_for(2, [], "VA", ["electric_baseboard_heat"])
+        self.assertGreater(heated, plain)
+
+    def test_gas_heat_lowers_the_electric_estimate(self):
+        plain, _ = main.utilities_for(2, [], "VA")
+        gas, _ = main.utilities_for(2, [], "VA", ["gas_heat"])
+        self.assertLess(gas, plain)
+
+    def test_unknown_feature_is_ignored_not_guessed_at(self):
+        factor, _ = main.feature_adjustment(["marble_countertops", "balcony"])
+        self.assertEqual(factor, 1.0)
+
+    def test_adjustment_is_bounded_both_ways(self):
+        everything = list(main.FEATURE_EFFECT.keys())
+        factor, _ = main.feature_adjustment(everything)
+        self.assertGreaterEqual(factor, 0.75)
+        self.assertLessEqual(factor, 1.6)
+
+    def test_adjustment_is_reported_not_hidden(self):
+        _, items = main.utilities_for(2, [], "VA", ["window_ac"])
+        electric = [i for i in items if i["name"] == "Electricity"][0]
+        self.assertIn("adjusted", electric)
+        self.assertTrue(electric["adjusted"]["reasons"])
+
+    def test_no_adjustment_key_when_nothing_was_seen(self):
+        _, items = main.utilities_for(2, [], "VA", [])
+        electric = [i for i in items if i["name"] == "Electricity"][0]
+        self.assertNotIn("adjusted", electric)
+
+    def test_features_do_not_apply_when_the_landlord_pays(self):
+        a, _ = main.utilities_for(2, ["electric"], "VA", ["electric_baseboard_heat"])
+        b, _ = main.utilities_for(2, ["electric"], "VA", [])
+        self.assertEqual(a, b)
+
+
 class TestConcessions(unittest.TestCase):
     def test_weeks_free_lowers_effective_rent(self):
         c = main.concession(2266, 8, None, 12, False)
@@ -218,6 +265,57 @@ class TestFeeCatalogue(unittest.TestCase):
                              for f in main.unaddressed_fees([], has_pet=False)))
         self.assertTrue(any(f["id"] == "pet"
                             for f in main.unaddressed_fees([], has_pet=True)))
+
+
+class TestWhatWouldSharpen(unittest.TestCase):
+    """The panel that says how uncertain the estimate still is."""
+
+    def test_gating_inputs_come_first(self):
+        out = main.what_would_sharpen({"bedrooms": 2}, {})
+        fields = [i["field"] for i in out["items"]]
+        self.assertIn("income", fields[:2])
+        self.assertIn("rent", fields[:2])
+
+    def test_everything_known_means_nothing_to_suggest(self):
+        parsed = {"rent": 1100, "bedrooms": 2, "state": "VA",
+                  "utilities_stated": True, "unit_features": ["window_ac"],
+                  "fees_without_amounts": []}
+        form = {"income": 3000, "rent": 1100, "state": "VA", "commute_miles": 4}
+        out = main.what_would_sharpen(parsed, form)
+        self.assertEqual(out["items"], [])
+        self.assertEqual(out["possible_swing"], 0)
+
+    def test_filling_something_in_removes_it(self):
+        parsed = {"rent": 1100, "bedrooms": 2, "utilities_stated": True,
+                  "unit_features": ["window_ac"]}
+        before = main.what_would_sharpen(parsed, {"income": 3000, "rent": 1100})
+        after = main.what_would_sharpen(
+            parsed, {"income": 3000, "rent": 1100, "state": "VA",
+                     "commute_miles": 4})
+        self.assertGreater(before["possible_swing"], after["possible_swing"])
+
+    def test_a_fee_with_no_price_is_suggested_with_its_range(self):
+        out = main.what_would_sharpen(
+            {"rent": 1000, "bedrooms": 1, "state": "VA",
+             "utilities_stated": True, "unit_features": ["window_ac"],
+             "fees_without_amounts": ["parking"]},
+            {"income": 3000, "rent": 1000, "state": "VA", "commute_miles": 2})
+        parking = [i for i in out["items"] if i["field"] == "fee:parking"]
+        self.assertEqual(len(parking), 1)
+        self.assertGreater(parking[0]["high"], parking[0]["low"])
+
+    def test_swing_matches_the_sum_of_the_non_gating_items(self):
+        out = main.what_would_sharpen({"bedrooms": 2}, {})
+        rest = [i for i in out["items"] if i["field"] not in ("income", "rent")]
+        self.assertAlmostEqual(out["possible_swing"],
+                               sum(i["high"] - i["low"] for i in rest), delta=1)
+
+    def test_suggestions_are_capped_so_the_panel_stays_readable(self):
+        out = main.what_would_sharpen(
+            {"bedrooms": 4,
+             "fees_without_amounts": ["parking", "pet", "amenity", "valet_trash"]},
+            {})
+        self.assertLessEqual(len(out["items"]), 6)
 
 
 class TestLevers(unittest.TestCase):

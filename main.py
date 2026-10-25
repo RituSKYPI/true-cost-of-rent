@@ -81,6 +81,49 @@ US_AVG_CENTS = 16.48          # EIA 2024 US total, used when state is unknown
 # apartment-scale figures and the UI labels them an estimate.
 KWH_BY_BEDROOMS = {0: 380, 1: 500, 2: 700, 3: 880, 4: 1020}
 
+# Features the model can SEE in listing photos that change the electricity
+# bill, and by how much. These are adjustments to our own assumption, not
+# data, and the UI says so beside the figure.
+#
+# The direction of each is well established even though the size is not:
+# resistance heating converts electricity to heat at roughly 1:1 while a heat
+# pump moves several units of heat per unit of electricity, so all-electric
+# resistance heat is the big one. Window units are less efficient than a
+# properly sized central system. Single pane windows lose more heat.
+#
+# Kept deliberately conservative. The point is to stop pretending every
+# apartment of a given size uses the same power, not to claim precision.
+FEATURE_EFFECT = {
+    "electric_baseboard_heat": (1.35, "electric resistance heating, which "
+                                      "costs far more to run than gas or a heat pump"),
+    "all_electric":            (1.15, "no gas supply, so everything runs on electricity"),
+    "window_ac":               (1.10, "window air conditioning, less efficient "
+                                      "than a central system"),
+    "old_windows":             (1.08, "older single pane windows lose more heat"),
+    "in_unit_laundry":         (1.05, "a washer and dryer in the unit"),
+    "gas_heat":                (0.88, "gas heating, so less of the bill is electric"),
+    "heat_pump":               (0.90, "a heat pump, which is efficient to run"),
+    "central_air":             (1.00, ""),
+    "gas_stove":               (0.98, "a gas stove rather than electric"),
+    "no_laundry":              (1.00, ""),
+}
+
+
+def feature_adjustment(features):
+    """Combined multiplier on electricity use, plus why. Capped so a long
+    feature list cannot run away with the estimate."""
+    factor, reasons = 1.0, []
+    for f in (features or []):
+        eff = FEATURE_EFFECT.get(f)
+        if not eff:
+            continue
+        mult, why = eff
+        factor *= mult
+        if why:
+            reasons.append(why)
+    factor = max(0.75, min(factor, 1.6))
+    return round(factor, 3), reasons
+
 # Non-electric utilities an apartment typically pays, monthly dollars. Also
 # an assumption. Water and sewer vary enormously by municipality.
 OTHER_UTILITY_COST = {
@@ -159,7 +202,7 @@ BURDEN_OK = 0.30
 BURDEN_SEVERE = 0.50
 
 
-def utilities_for(bedrooms, included, state=None):
+def utilities_for(bedrooms, included, state=None, features=None):
     """Monthly utility estimate, built up line by line rather than as one
     opaque number.
 
@@ -173,19 +216,29 @@ def utilities_for(bedrooms, included, state=None):
     state = (state or "").upper().strip()[:2]
 
     cents = CENTS_PER_KWH.get(state, US_AVG_CENTS)
-    kwh = KWH_BY_BEDROOMS[b]
+    base_kwh = KWH_BY_BEDROOMS[b]
+    factor, reasons = feature_adjustment(features)
+    kwh = int(round(base_kwh * factor))
     electric = round(kwh * cents / 100.0, 2)
 
     items = []
     if "electric" not in included:
-        items.append({
+        basis = ("%s kWh a month at %.2f cents, the %s average for %s"
+                 % (kwh, cents, EIA_YEAR,
+                    state if state in CENTS_PER_KWH else "the US"))
+        item = {
             "name": "Electricity",
             "amount": electric,
-            "basis": "%s kWh a month at %.2f cents, the %s average for %s"
-                     % (kwh, cents, EIA_YEAR,
-                        state if state in CENTS_PER_KWH else "the US"),
+            "basis": basis,
             "sourced": state in CENTS_PER_KWH,
-        })
+        }
+        if reasons:
+            item["adjusted"] = {
+                "base_kwh": base_kwh,
+                "factor": factor,
+                "reasons": reasons,
+            }
+        items.append(item)
     for key, label in (("water", "Water and sewer"), ("gas", "Gas"),
                        ("trash", "Trash"), ("internet", "Internet")):
         if key in included:
@@ -350,7 +403,8 @@ def analyze(payload):
     insurance = float(payload.get("insurance") or 15)
 
     state = payload.get("state")
-    utils, util_items = utilities_for(bedrooms, included, state)
+    features = payload.get("unit_features")
+    utils, util_items = utilities_for(bedrooms, included, state, features)
     commute = commute_cost(miles, mode)
 
     # The itemised utility figures are for the whole unit. The breakdown
@@ -461,6 +515,7 @@ def analyze(payload):
         "utility_unit_total": round(utils, 2),
         "utility_split_between": roommates,
         "utility_source": EIA_SOURCE,
+        "unit_features": features or [],
         "state": state,
     }
 
@@ -493,7 +548,34 @@ explicitly stated. Return strict JSON with these keys and nothing else:
                      zero or waiver"],
  "fees_without_amounts": ["ids the listing refers to but never puts a number
                            on, such as a parking section with no price"],
+ "unit_features": ["ids from the feature list below that you can SEE in the
+                   photos or that the listing states in words"],
+ "red_flags": [{"phrase": "the wording from the listing, under 12 words",
+                "means": "what it actually means for the renter, one line"}],
  "notes": "short string naming anything that was NOT stated"}
+
+The unit_feature ids you may use, and nothing else:
+window_ac, central_air, electric_baseboard_heat, gas_heat, heat_pump,
+old_windows, in_unit_laundry, no_laundry, all_electric, gas_stove
+
+Rules for unit_features:
+- Only list what you can actually see in a photo or what the listing states
+  in words. A window air conditioning unit is visible. Electric baseboard
+  heaters are the long low metal units along the bottom of a wall. Old
+  windows have thin aluminium or wooden frames and often a single pane.
+- Never infer a feature from the building's age, the rent, or the area.
+- If you cannot tell, leave it out. An empty list is a correct answer.
+
+Rules for red_flags:
+- Only quote wording that is actually in the listing. Keep each phrase short.
+- Flag pressure and vagueness, not ordinary description. Examples of the kind
+  of thing that counts: a discount conditional on signing within a time
+  limit, "starting at" or "from" before a price, "prices subject to change",
+  "up to" before a concession, "call for pricing", a rate tied to a lease
+  length longer than the one advertised.
+- Do not flag something just because it is a fee. Fees are handled elsewhere.
+- Return an empty list if the listing is straightforward. Most are not, but
+  some are.
 
 The fee ids you may use in addressed_fees, and nothing else:
 application, admin, deposit, parking, valet_trash, water_sewer, amenity,
@@ -997,6 +1079,159 @@ def api_explore():
     if max_rent:
         out["max_rent"] = float(max_rent)
     return jsonify(out)
+
+
+def what_would_sharpen(parsed, form=None):
+    """What is still missing, ranked by how much it could move the answer.
+
+    An estimate built on six unknowns is not the same as one built on one,
+    and a person deserves to know which. Each entry carries the dollar range
+    it could swing the monthly total by, drawn from the same fee catalogue
+    and utility tables the calculation uses, so the figures here and the
+    figures there cannot drift apart.
+    """
+    p = parsed or {}
+    f = form or {}
+    beds = int(p.get("bedrooms") or f.get("bedrooms") or 1)
+    b = min(max(beds, 0), 4)
+    out = []
+
+    def add(field, label, why, low, high, how):
+        out.append({"field": field, "label": label, "why": why,
+                    "low": round(low), "high": round(high), "how": how})
+
+    # The two that gate the calculation entirely.
+    if not f.get("income"):
+        add("income", "Your monthly income after tax",
+            "Without it there is no percentage, only a dollar figure.",
+            0, 0, "Type it in. It stays in your browser.")
+    if not (p.get("rent") or p.get("rent_min") or f.get("rent")):
+        add("rent", "The rent",
+            "Nothing can be worked out without it.",
+            0, 0, "Screenshot the pricing section, or type it in.")
+
+    # State drives the electricity price, and the spread across states is wide.
+    if not (p.get("state") or f.get("state")):
+        cheap = min(CENTS_PER_KWH.values())
+        dear = max(CENTS_PER_KWH.values())
+        kwh = KWH_BY_BEDROOMS[b]
+        add("state", "Which state this is in",
+            "Electricity costs %.0f cents a kWh in the cheapest state and "
+            "%.0f in the dearest. That is a real spread on the same apartment."
+            % (cheap, dear),
+            kwh * cheap / 100, kwh * dear / 100,
+            "Two letters. It is usually in the listing address.")
+
+    # Utilities. Silence here is the single biggest unknown.
+    if not p.get("utilities_stated"):
+        full, _ = utilities_for(b, [], (p.get("state") or f.get("state")))
+        add("utilities", "Which utilities the landlord covers",
+            "The listing said nothing, so we have assumed you pay all of them.",
+            0, full,
+            "Ask the leasing office, then tick the boxes.")
+
+    # Commute. People consistently forget this one entirely.
+    if not f.get("commute_miles"):
+        add("commute", "How far you need to travel",
+            "Driving fifteen miles each way costs more than many of the fees "
+            "people do worry about.",
+            0, round(20 * 2 * COMMUTE_DAYS * CENTS_PER_MILE),
+            "Put in the listing address and where you need to be, and it "
+            "looks up the real time and distance.")
+
+    # Fees the listing gestured at without a number.
+    for fid in (p.get("fees_without_amounts") or []):
+        fee = CATALOG_BY_ID.get(fid)
+        if not fee:
+            continue
+        monthly = "month" in (fee.get("unit") or "")
+        add("fee:" + fid, fee["name"],
+            "The listing has a section for this but never gives a price.",
+            fee["low"] if monthly else 0,
+            fee["high"] if monthly else round(fee["high"] / 12),
+            "Ask for the figure in writing before you apply.")
+
+    # Photos. Only worth suggesting if they gave us none of the unit.
+    if not (p.get("unit_features") or []):
+        kwh = KWH_BY_BEDROOMS[b]
+        cents = CENTS_PER_KWH.get((p.get("state") or f.get("state") or ""), US_AVG_CENTS)
+        base = kwh * cents / 100
+        add("photos", "A screenshot of the apartment photos",
+            "Window air conditioning, electric baseboard heaters and old "
+            "windows all change the power bill, and they are visible.",
+            round(base * 0.88 - base), round(base * 1.35 - base),
+            "Add a screenshot showing the rooms, not just the price.")
+
+    # Biggest possible swing first, but the two gating items stay on top.
+    gating = [o for o in out if o["field"] in ("income", "rent")]
+    rest = sorted((o for o in out if o["field"] not in ("income", "rent")),
+                  key=lambda o: -(o["high"] - o["low"]))
+    ranked = gating + rest
+    swing = sum(o["high"] - o["low"] for o in rest)
+    return {"items": ranked[:6], "possible_swing": round(swing)}
+
+
+@app.route("/api/sharpen", methods=["POST"])
+def api_sharpen():
+    b = request.json or {}
+    return jsonify(what_would_sharpen(b.get("parsed"), b.get("form")))
+
+
+SHORTLIST_PROMPT = """Someone is choosing between places to live. Below are
+their options with figures that have ALREADY been computed and are final.
+
+Write 3 or 4 short sentences naming the trade-off they are actually making.
+Not a summary of the table, which they can read. The thing the table does not
+say out loud.
+
+Look for: a place that is cheapest on the listing but not cheapest to live
+in, a place whose gap between advertised and true cost is unusually wide, and
+whether any option is actually within the 30 percent guideline.
+
+Hard rules:
+- Never state a number that is not in the data below, and use whole dollars.
+- Never recalculate anything.
+- Do not tell them which to pick. Name the trade-off and stop.
+- Plain language, short sentences, no jargon.
+
+OPTIONS:
+"""
+
+
+@app.route("/api/shortlist", methods=["POST"])
+def api_shortlist():
+    """Reasoning across several places at once.
+
+    This is the one thing here that a general chat assistant cannot do well,
+    and the reason is not the writing: it is that the figures were produced
+    by the same code applied identically to every option. Without that, any
+    comparison is comparing differently-made numbers.
+
+    The shortlist lives in the browser. It is only sent here when the person
+    asks for this, and it carries no income, no address and no identifier.
+    """
+    places = (request.json or {}).get("places") or []
+    if len(places) < 2:
+        return jsonify(error="Save at least two places first."), 400
+    if client is None:
+        return jsonify(verdict=None, reason="Model not configured.")
+
+    safe = []
+    for p in places[:8]:
+        safe.append({
+            "name": str(p.get("name") or "Unnamed")[:60],
+            "advertised_rent": round(float(p.get("advertised") or 0)),
+            "true_monthly_cost": round(float(p.get("total") or 0)),
+            "hidden_per_month": round(float(p.get("hidden") or 0)),
+            "share_of_income_percent": round(float(p.get("burden") or 0) * 100),
+        })
+    try:
+        resp = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=SHORTLIST_PROMPT + json.dumps(safe, indent=1))
+        return jsonify(verdict=(resp.text or "").strip() or None)
+    except Exception as e:
+        return jsonify(verdict=None, reason=str(e)[:200])
 
 
 @app.route("/api/parse", methods=["POST"])
