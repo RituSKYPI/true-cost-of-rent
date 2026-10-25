@@ -397,6 +397,24 @@ class TestAffordability(unittest.TestCase):
     def test_no_income_gives_no_answer(self):
         self.assertIsNone(main.affordable_rent(0, 1, "VA"))
 
+    def test_a_commute_lowers_what_you_can_pay_in_rent(self):
+        near = main.affordable_rent(3000, 1, "VA", [], main.commute_cost(2, "drive"))
+        far = main.affordable_rent(3000, 1, "VA", [], main.commute_cost(20, "drive"))
+        self.assertLess(far["rent_only"], near["rent_only"])
+
+    def test_the_commute_does_not_change_the_gross_ceiling(self):
+        # 30 percent of income is 30 percent of income. The commute comes out
+        # of what is left for rent, not out of the guideline itself.
+        a = main.affordable_rent(3000, 1, "VA", [], 0)
+        b = main.affordable_rent(3000, 1, "VA", [], 200)
+        self.assertEqual(a["gross"], b["gross"])
+        self.assertLess(b["rent_only"], a["rent_only"])
+
+    def test_the_rent_ceiling_drops_by_the_cost_of_the_commute(self):
+        a = main.affordable_rent(3000, 1, "VA", [], 0)
+        b = main.affordable_rent(3000, 1, "VA", [], 150)
+        self.assertAlmostEqual(a["rent_only"] - b["rent_only"], 150, places=2)
+
 
 class TestNothingIsInvented(unittest.TestCase):
     """The model is never allowed to produce a figure. These check that the

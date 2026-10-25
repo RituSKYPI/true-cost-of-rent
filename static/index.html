@@ -565,6 +565,16 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
       <input type="number" id="x-income" min="0" step="50" placeholder="$"></div>
     <div><label for="x-max">Most you want to pay, optional</label>
       <input type="number" id="x-max" min="0" step="25" placeholder="$"></div>
+    <div><label for="x-destination">Where you need to get to</label>
+      <input type="text" id="x-destination" placeholder="Virginia Tech, Blacksburg, VA"
+             aria-describedby="x-dest-help">
+      <span id="x-dest-help" class="prov missing">A cheaper town usually means
+        a longer trip. This takes it off your ceiling.</span></div>
+    <div><label for="x-commute-mode">How you would get there</label>
+      <select id="x-commute-mode">
+        <option value="drive">Drive</option><option value="transit">Transit</option>
+        <option value="bike">Bike</option><option value="walk">Walk</option>
+      </select></div>
   </div>
 
   <div class="row" style="margin-top:20px">
@@ -582,6 +592,7 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
     </div>
     <span id="x-badge" class="badge ok"></span>
   </div>
+  <div id="x-commute" class="note hidden"></div>
   <div id="x-verdict" class="note hidden"></div>
   <table style="margin-top:20px" id="x-market-table">
     <caption>What HUD says this area costs</caption>
@@ -1241,7 +1252,9 @@ $("explore").addEventListener("click", async () => {
       body: JSON.stringify({city, state, zip,
         bedrooms:+$("x-bedrooms").value, baths:$("x-baths").value,
         income:+$("x-income").value, roommates:+$("x-roommates").value,
-        max_rent:$("x-max").value})});
+        max_rent:$("x-max").value,
+        destination:$("x-destination").value.trim(),
+        commute_mode:$("x-commute-mode").value})});
     renderExplore(await r.json(), +$("x-bedrooms").value);
     $("explore-status").textContent = "";
   }catch(e){ $("explore-status").textContent = "Could not reach the server."; }
@@ -1260,6 +1273,18 @@ function renderExplore(d, beds){
         ? " That is " + money(d.budget.per_person) + " each." : "") +
       " All in, including utilities, your ceiling is " + money(d.budget.gross) + ".";
   } else hide($("x-budget"));
+
+  // What the trip out of this area costs, in money and in hours.
+  const cm = d.commute, cbox = $("x-commute");
+  cbox.classList.toggle("hidden", !cm);
+  if(cm){
+    const names = {drive:"Driving",transit:"Transit",bike:"Biking",walk:"Walking"};
+    cbox.innerHTML =
+      `<p><strong>${names[cm.mode]||cm.mode} from ${cm.from} to ${cm.to}</strong></p>
+       <p class="sub">${cm.miles} miles each way, about ${cm.minutes} minutes.
+       That is ${money(cm.cost)} a month, already taken off the figure above,
+       and ${cm.hours_per_month} hours a month of your life, which is not.</p>`;
+  }
 
   const m = d.market;
   if(m && Object.keys(m.by_bedrooms).length){

@@ -1139,9 +1139,35 @@ def api_explore():
     elif err:
         out["notes"].append(err)
 
-    # 2. What this person can carry.
+    # 2. What getting out of this area costs, if they said where they need
+    #    to be. A town is cheaper for a reason, and the reason is usually
+    #    that it is further away. Leaving the commute out of the ceiling
+    #    overstates what someone can afford in precisely the places they
+    #    choose because the rent looked manageable.
+    where = zip_code or (("%s, %s" % (city, state)).strip(", "))
+    destination = (b.get("destination") or "").strip()
+    mode = (b.get("commute_mode") or "drive").lower()
+    commute_monthly = float(b.get("commute") or 0)
+    if destination and where:
+        data, rerr = route_between(where, destination, mode)
+        if data:
+            commute_monthly = commute_cost(data["miles"], mode)
+            out["commute"] = {
+                "from": where,
+                "to": destination,
+                "mode": mode,
+                "miles": data["miles"],
+                "minutes": data["minutes"],
+                "hours_per_month": round(data["minutes"] * 2 * COMMUTE_DAYS / 60, 1),
+                "cost": commute_monthly,
+            }
+        elif rerr and rerr != "no_key":
+            out["notes"].append(
+                "Could not work out the commute from there. Check the spelling.")
+
+    # 3. What this person can carry, once that is taken off.
     budget = affordable_rent(income, bedrooms, state, b.get("utilities_included"),
-                             float(b.get("commute") or 0),
+                             commute_monthly,
                              float(b.get("parking") or 0), share)
     if budget is not None:
         out["budget"] = {
@@ -1154,7 +1180,7 @@ def api_explore():
                      "contains none of those",
         }
 
-    # 3. What is actually there.
+    # 4. What is actually there.
     where = zip_code or (("%s, %s" % (city, state)).strip(", "))
     if where:
         bed_word = {0: "studio apartments", 1: "1 bedroom apartments",
