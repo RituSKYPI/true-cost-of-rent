@@ -12,7 +12,7 @@
   --ink:#16202e;
   --ink-soft:#2c3a4d;
   --muted:#5c6b7e;
-  --faint:#8795a6;
+  --faint:#5f6d7e;
   --ground:#edf0f4;
   --surface:#ffffff;
   --line:#d2dae4;
@@ -55,7 +55,7 @@ body{
   font-size:clamp(1.9rem,5vw,2.75rem);font-weight:700;letter-spacing:-.03em;
   line-height:1;font-variant-numeric:tabular-nums;
 }
-.gap .arrow{font-size:1.5rem;color:#5d6e82;padding-bottom:5px;line-height:1}
+.gap .arrow{font-size:1.5rem;color:#8d9cae;padding-bottom:5px;line-height:1}
 .gap .delta .v{color:#ffb3bd}
 .hero .src{margin-top:16px;font-size:.8125rem;color:#7d8da0;max-width:60ch}
 
@@ -195,7 +195,7 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
 @media (prefers-reduced-motion:reduce){*{transition:none !important}}
 @media (prefers-color-scheme:dark){
   :root{
-    --ink:#e7edf5; --ink-soft:#c3cfdd; --muted:#95a4b6; --faint:#71829a;
+    --ink:#e7edf5; --ink-soft:#c3cfdd; --muted:#95a4b6; --faint:#8290a6;
     --ground:#0f1621; --surface:#172231; --line:#2b3a4d; --line-soft:#223042;
     --ok:#5fd3ae; --ok-bg:#10342a; --ok-line:#2a6b58;
     --tight:#f0c178; --tight-bg:#33260f;
@@ -296,7 +296,8 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
        aria-label="Add a screenshot. Click, press Enter, or paste an image.">
     <p class="big">Drop a screenshot here</p>
     <p class="sub">or click to choose a file, or press Ctrl and V to paste one</p>
-    <input type="file" id="file" accept="image/*" multiple class="vh">
+    <input type="file" id="file" accept="image/*" multiple class="vh"
+           aria-label="Choose screenshot files of the listing">
   </div>
   <div id="shots" class="shots hidden"></div>
 
@@ -309,7 +310,8 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
 
   <details>
     <summary>Or type the listing out</summary>
-    <textarea id="listing" style="margin-top:12px"
+    <label for="listing" style="margin-top:12px">Listing text</label>
+    <textarea id="listing"
       placeholder="2BR/1BA, $1,150/mo. Water and trash included. Parking $45/mo."></textarea>
   </details>
 
