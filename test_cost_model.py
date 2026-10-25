@@ -10,6 +10,7 @@ or with:   python3 test_cost_model.py
 
 import sys
 import types
+import json
 import unittest
 
 
@@ -599,6 +600,54 @@ class SalvageReply(unittest.TestCase):
         for raw in samples:
             out = main._salvage_reply(raw) or ""
             self.assertNotIn("set_fields", out)
+
+
+
+class HostileInput(unittest.TestCase):
+    """The analyse endpoint is public. Anything can be posted to it, and the
+    model can hand back a number nobody expected. The response must stay
+    legal JSON whatever goes in, because a NaN in the body means the browser
+    throws on parse and the person sees nothing at all."""
+
+    HOSTILE = [
+        {}, {"rent": 0, "income": 0}, {"rent": -500, "income": -1},
+        {"rent": 1e12, "income": 1}, {"rent": "900", "income": "3000"},
+        {"rent": 900, "income": 3000, "roommates": 0},
+        {"rent": 900, "income": 3000, "roommates": -3},
+        {"rent": 900, "income": 3000, "lease_months": 0},
+        {"rent": 900, "income": 3000, "bedrooms": 99},
+        {"rent": 900, "income": 3000, "state": "ZZ"},
+        {"rent": float("nan"), "income": 3000},
+        {"rent": float("inf"), "income": 3000},
+        {"rent": None, "income": None},
+        {"rent": 900, "income": 3000, "commute_miles": 1e9},
+        {"rent": 900, "income": 3000, "commute_mode": "teleport"},
+        {"rent": "abc", "income": "xyz"},
+        {"rent": [1, 2], "income": {"a": 1}},
+        {"rent": 900, "income": 3000, "roommates": 1e9},
+    ]
+
+    def test_every_hostile_payload_serialises_as_legal_json(self):
+        for payload in self.HOSTILE:
+            with self.subTest(payload=payload):
+                out = main.analyze(payload)
+                json.dumps(out, allow_nan=False)
+
+    def test_no_hostile_payload_produces_a_negative_total(self):
+        for payload in self.HOSTILE:
+            with self.subTest(payload=payload):
+                self.assertGreaterEqual(main.analyze(payload)["total"], 0)
+
+    def test_money_in_rejects_the_three_things_that_break_json(self):
+        self.assertEqual(main.money_in(float("nan")), 0.0)
+        self.assertEqual(main.money_in(float("inf")), 0.0)
+        self.assertEqual(main.money_in(-500), 0.0)
+        self.assertEqual(main.money_in("900"), 900.0)
+        self.assertEqual(main.money_in(None, 15), 15.0)
+
+    def test_count_in_never_returns_a_divisor_of_zero(self):
+        for bad in (0, -3, None, "", "abc", float("nan"), 1e9):
+            self.assertGreaterEqual(main.count_in(bad, 1, 1, 20), 1)
 
 
 if __name__ == "__main__":

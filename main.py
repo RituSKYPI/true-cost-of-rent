@@ -432,24 +432,54 @@ def concession(rent, weeks_free, months_free, lease_months, net_effective):
     }
 
 
+def money_in(value, default=0.0, cap=1e7):
+    """Every number entering the model passes through here.
+
+    Three things get in otherwise. A negative, which produces a negative
+    rent and a nonsense total. A NaN or an infinity, which survive the
+    arithmetic and then come out the other end as bare NaN or Infinity
+    tokens in the response body. Neither is legal JSON, so the browser
+    throws on parse and the person sees nothing at all rather than a bad
+    number. And an absurd magnitude, which is not an attack so much as a
+    typo, but it makes every downstream figure meaningless.
+    """
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if n != n or n in (float("inf"), float("-inf")):   # NaN, +inf, -inf
+        return float(default)
+    return float(min(max(n, 0.0), cap))
+
+
+def count_in(value, default=1, low=1, high=50):
+    """Same idea for the counts. A zero roommate count divides by zero and
+    a zero lease length spreads a move in fee over no months."""
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+    return int(min(max(n, low), high))
+
+
 def analyze(payload):
     """Pure function. Takes the user's numbers, returns the full breakdown.
 
     No I/O, no model call, no database write. This is the part that must be
     correct, so it is kept small and testable.
     """
-    rent = float(payload.get("rent") or 0)
-    roommates = max(int(payload.get("roommates") or 1), 1)
-    income = float(payload.get("income") or 0)
-    bedrooms = int(payload.get("bedrooms") or 1)
+    rent = money_in(payload.get("rent"))
+    roommates = count_in(payload.get("roommates"), 1, 1, 20)
+    income = money_in(payload.get("income"))
+    bedrooms = count_in(payload.get("bedrooms"), 1, 0, 10)
     included = payload.get("utilities_included") or []
-    parking = float(payload.get("parking") or 0)
-    other_fees = float(payload.get("other_fees") or 0)
-    one_time = float(payload.get("one_time_fees") or 0)
-    lease_months = max(int(payload.get("lease_months") or 12), 1)
-    miles = float(payload.get("commute_miles") or 0)
+    parking = money_in(payload.get("parking"))
+    other_fees = money_in(payload.get("other_fees"))
+    one_time = money_in(payload.get("one_time_fees"))
+    lease_months = count_in(payload.get("lease_months"), 12, 1, 120)
+    miles = money_in(payload.get("commute_miles"), 0, cap=5000)
     mode = payload.get("commute_mode") or "drive"
-    insurance = float(payload.get("insurance") or 15)
+    insurance = money_in(payload.get("insurance"), 15)
 
     state = payload.get("state")
     features = payload.get("unit_features")

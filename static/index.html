@@ -718,6 +718,20 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
 <script>
 const $ = id => document.getElementById(id);
 const money = n => "$" + Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0});
+
+/* Anything that came from the model, from a listing page, or from the Places
+   API is somebody else's text. A listing is a document an attacker can write,
+   and the model reads it, so a phrase lifted out of one can carry markup.
+   Everything untrusted goes through esc before it reaches innerHTML, and any
+   URL we put in an href goes through safeUrl, because escaping does nothing
+   about a javascript: scheme. */
+const esc = v => String(v == null ? "" : v)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const safeUrl = u => {
+  const t = String(u || "").trim();
+  return /^https?:\/\//i.test(t) ? esc(t) : "#";
+};
 const show = el => el.classList.remove("hidden");
 const hide = el => el.classList.add("hidden");
 
@@ -758,7 +772,7 @@ function drawShortlist(){
 
   $("compare-rows").innerHTML = byTrue.map(p => `
     <tr${p===best && shortlist.length>1 ? ' style="font-weight:600"' : ''}>
-      <td>${p.name||"Unnamed"}${p===best && shortlist.length>1
+      <td>${esc(p.name||"Unnamed")}${p===best && shortlist.length>1
         ? ' <span class="badge ok" style="font-size:.6875rem;padding:2px 8px">Cheapest</span>':''}</td>
       <td class="n">${money(p.advertised)}</td>
       <td class="n">${money(p.total)}</td>
@@ -780,9 +794,9 @@ function drawShortlist(){
     const gap = Math.round(byAds[0].total - best.total);
     flip.innerHTML =
       `<p><strong>The cheapest listing is not the cheapest place.</strong></p>
-       <p class="sub">${byAds[0].name||"One place"} advertises ${money(byAds[0].advertised)},
+       <p class="sub">${esc(byAds[0].name||"One place")} advertises ${money(byAds[0].advertised)},
        the lowest on your list, and costs ${money(byAds[0].total)} a month.
-       ${best.name||"Another"} advertises ${money(best.advertised)} and costs
+       ${esc(best.name||"Another")} advertises ${money(best.advertised)} and costs
        ${money(best.total)}. Going by the listing price would cost you about
        ${money(gap)} a month, or ${money(gap*12)} over a year.</p>`;
   } else hide(flip);
@@ -796,7 +810,7 @@ function drawShots(){
   const wrap = $("shots");
   wrap.classList.toggle("hidden", images.length === 0);
   wrap.innerHTML = images.map((im,i) => `
-    <figure><img src="${im.url}" alt="Screenshot ${i+1}">
+    <figure><img src="${esc(im.url)}" alt="Screenshot ${i+1}">
       <button class="ghost sm drop-img" data-i="${i}"
         style="margin-top:7px;width:100%">Remove</button></figure>`).join("");
   wrap.querySelectorAll(".drop-img").forEach(b => b.addEventListener("click", () => {
@@ -977,7 +991,7 @@ $("parse").addEventListener("click", async () => {
       usedBox.innerHTML =
         `<p><strong>Read from ${usedList.length === 1 ? "one source"
            : usedList.length + " sources, merged"}.</strong></p>
-         <p class="sub">${usedList.join(", ")}.</p>`;
+         <p class="sub">${esc(usedList.join(", "))}.</p>`;
     }
 
     const linkBox = $("link-note");
@@ -987,7 +1001,7 @@ $("parse").addEventListener("click", async () => {
       linkBox.innerHTML =
         `<p><strong>${d.link_failed ? "The link did not work."
                                     : "Not sure about the link."}</strong></p>
-         <p class="sub">${d.link_message}</p>`;
+         <p class="sub">${esc(d.link_message)}</p>`;
     }
 
     const cached = $("cached-note");
@@ -1049,8 +1063,8 @@ async function refreshSharpen(){
         const range = (i.high - i.low) > 0
           ? ` <span class="sub">worth up to ${money(i.high - i.low)} a month</span>`
           : ` <span class="sub">required</span>`;
-        return `<li style="margin-bottom:7px"><strong>${i.label}</strong>${range}
-                <br><span class="sub">${i.why} ${i.how}</span></li>`;
+        return `<li style="margin-bottom:7px"><strong>${esc(i.label)}</strong>${range}
+                <br><span class="sub">${esc(i.why)} ${esc(i.how)}</span></li>`;
       }).join("") + `</ul>`;
   }catch(e){}
 }
@@ -1071,7 +1085,7 @@ document.querySelectorAll(".util").forEach(c =>
       usedBox.innerHTML =
         `<p><strong>Read from ${usedList.length === 1 ? "one source"
            : usedList.length + " sources, merged"}.</strong></p>
-         <p class="sub">${usedList.join(", ")}.</p>`;
+         <p class="sub">${esc(usedList.join(", "))}.</p>`;
     }
 
     const linkBox = $("link-note");
@@ -1081,7 +1095,7 @@ document.querySelectorAll(".util").forEach(c =>
       linkBox.innerHTML =
         `<p><strong>${d.link_failed ? "The link did not work."
                                     : "Not sure about the link."}</strong></p>
-         <p class="sub">${d.link_message}</p>`;
+         <p class="sub">${esc(d.link_message)}</p>`;
     }
 
     const cached = $("cached-note");
@@ -1235,7 +1249,7 @@ function render(d){
   const flags = lastParsed.red_flags || [];
   $("flags").classList.toggle("hidden", flags.length === 0);
   $("flag-list").innerHTML = flags.map(f =>
-    `<li><strong>"${f.phrase}"</strong><br><span class="sub">${f.means}</span></li>`
+    `<li><strong>"${esc(f.phrase)}"</strong><br><span class="sub">${esc(f.means)}</span></li>`
   ).join("");
 
   const ui = d.utility_items || [];
@@ -1247,12 +1261,12 @@ function render(d){
     : `<tr><th scope="col">Utility</th><th scope="col">Basis</th>
        <th scope="col" class="n">Per month</th></tr>`;
   $("util-rows").innerHTML = ui.map(u => splitN > 1
-    ? `<tr><td>${u.name}</td>
-       <td class="sub">${u.basis}${u.sourced?" <strong>(EIA data)</strong>":""}</td>
+    ? `<tr><td>${esc(u.name)}</td>
+       <td class="sub">${esc(u.basis)}${u.sourced?" <strong>(EIA data)</strong>":""}</td>
        <td class="n sub">${money(u.amount)}</td>
        <td class="n">${money(u.share)}</td></tr>`
-    : `<tr><td>${u.name}</td>
-       <td class="sub">${u.basis}${u.sourced?" <strong>(EIA data)</strong>":""}</td>
+    : `<tr><td>${esc(u.name)}</td>
+       <td class="sub">${esc(u.basis)}${u.sourced?" <strong>(EIA data)</strong>":""}</td>
        <td class="n">${money(u.amount)}</td></tr>`).join("");
   if(splitN > 1){
     $("util-rows").innerHTML += `<tr style="font-weight:600">
@@ -1269,8 +1283,8 @@ function render(d){
     const pct = Math.round((adj.factor - 1) * 100);
     adjNote.innerHTML =
       `<p><strong>Adjusted from the photos.</strong></p>
-       <p class="sub">A ${d.state || "typical"} unit this size would normally use
-       about ${adj.base_kwh} kWh a month. The model saw ${adj.reasons.join(", ")},
+       <p class="sub">A ${esc(d.state || "typical")} unit this size would normally use
+       about ${adj.base_kwh} kWh a month. The model saw ${esc(adj.reasons.join(", "))},
        so the estimate is ${pct > 0 ? "raised" : "lowered"} by
        ${Math.abs(pct)} percent. That is an adjustment to our own assumption,
        not measured data.</p>`;
@@ -1303,14 +1317,14 @@ function render(d){
     (a.status === "no_amount" ? 0 : 1) - (b.status === "no_amount" ? 0 : 1));
   $("ask-wrap").classList.toggle("hidden", ask.length === 0);
   $("ask").innerHTML = ask.map(f => {
-    const range = (f.low||f.high) ? `${money(f.low)} to ${money(f.high)}, ${f.unit}` : f.unit;
+    const range = (f.low||f.high) ? `${money(f.low)} to ${money(f.high)}, ${esc(f.unit)}` : f.unit;
     const flag = f.status === "no_amount"
-      ? `<span class="badge high" style="font-size:.6875rem;padding:2px 8px">${f.status_label}</span>`
+      ? `<span class="badge high" style="font-size:.6875rem;padding:2px 8px">${esc(f.status_label)}</span>`
       : "";
     return `<li class="fee"><div class="top">
-      <strong>${f.name}</strong> ${flag}
+      <strong>${esc(f.name)}</strong> ${flag}
       <span class="sub n">${range}</span></div>
-      <p class="sub" style="margin:6px 0 0">${f.why}</p></li>`;
+      <p class="sub" style="margin:6px 0 0">${esc(f.why)}</p></li>`;
   }).join("");
   $("copy-questions").onclick = async () => {
     const txt = "Questions about the listing\n\n" +
@@ -1348,9 +1362,9 @@ function render(d){
   const lv = d.levers || [];
   $("levers-wrap").classList.toggle("hidden", lv.length === 0);
   $("levers").innerHTML = lv.map(l =>
-    `<li>${l.action} saves ${money(l.saves)} a month, bringing it to
+    `<li>${esc(l.action)} saves ${money(l.saves)} a month, bringing it to
      ${money(l.new_total)} and ${Math.round(l.new_burden*100)} percent of income.
-     ${l.note ? '<span class="sub">' + l.note + '</span>' : ''}</li>`).join("");
+     ${l.note ? '<span class="sub">' + esc(l.note) + '</span>' : ''}</li>`).join("");
 }
 
 /* ---------- shortlist verdict ----------
@@ -1371,7 +1385,7 @@ $("get-verdict").addEventListener("click", async () => {
     const d = await r.json();
     if(d.verdict){
       show($("verdict"));
-      $("verdict").innerHTML = `<p>${d.verdict.replace(/\n+/g,"</p><p>")}</p>`;
+      $("verdict").innerHTML = `<p>${esc(d.verdict).replace(/\n+/g,"</p><p>")}</p>`;
       $("verdict-status").textContent = "";
     }else{
       $("verdict-status").textContent = d.reason || d.error || "Could not do that.";
@@ -1417,9 +1431,9 @@ $("x-understand").addEventListener("click", async () => {
     const unclear = (p.unclear || []).filter(Boolean);
     $("x-understood").innerHTML =
       `<p><strong>Here is what I took from that.</strong></p>
-       <p class="sub">${p.understood || "Filled in what I could."}</p>` +
+       <p class="sub">${esc(p.understood || "Filled in what I could.")}</p>` +
       (unclear.length
-        ? `<p class="sub">I could not work out ${unclear.join(", ")}.
+        ? `<p class="sub">I could not work out ${esc(unclear.join(", "))}.
            The fields below are highlighted where I did fill something in,
            so check those and add the rest.</p>`
         : `<p class="sub">The fields below are highlighted. Check them before
@@ -1479,7 +1493,7 @@ function renderExplore(d, beds){
   if(cm){
     const names = {drive:"Driving",transit:"Transit",bike:"Biking",walk:"Walking"};
     cbox.innerHTML =
-      `<p><strong>${names[cm.mode]||cm.mode} from ${cm.from} to ${cm.to}</strong></p>
+      `<p><strong>${names[cm.mode]||cm.mode} from ${esc(cm.from)} to ${esc(cm.to)}</strong></p>
        <p class="sub">${cm.miles} miles each way, about ${cm.minutes} minutes.
        That is ${money(cm.cost)} a month, already taken off the figure above,
        and ${cm.hours_per_month} hours a month of your life, which is not.</p>`;
@@ -1504,7 +1518,7 @@ function renderExplore(d, beds){
         <td class="n">${money(v)}</td><td class="n">${cell}</td></tr>`;
     }).join("");
     $("x-market-src").textContent =
-      `HUD Fair Market Rent for ${m.area}${m.year?", "+m.year:""}. This is the ` +
+      `HUD Fair Market Rent for ${esc(m.area)}${m.year?", "+m.year:""}. This is the ` +
       `40th percentile gross rent for a standard unit, which is the figure the ` +
       `government uses to set housing voucher amounts. It includes utilities.`;
     show($("x-market-table"));
@@ -1538,14 +1552,14 @@ function renderExplore(d, beds){
     show($("x-places"));
     $("x-place-list").innerHTML = places.map(p => `
       <li class="place"><div class="top">
-        <strong>${p.name}</strong>
-        ${p.rating ? `<span class="sub n">${p.rating} from ${p.reviews||0} reviews</span>` : ""}
+        <strong>${esc(p.name)}</strong>
+        ${p.rating ? `<span class="sub n">${esc(p.rating)} from ${esc(p.reviews||0)} reviews</span>` : ""}
       </div>
-      <p class="sub" style="margin:5px 0 0">${p.address}</p>
+      <p class="sub" style="margin:5px 0 0">${esc(p.address)}</p>
       <p style="margin:8px 0 0;font-size:.875rem">
-        ${p.website ? `<a href="${p.website}" target="_blank" rel="noopener">Their site</a>` : ""}
+        ${p.website ? `<a href="${safeUrl(p.website)}" target="_blank" rel="noopener">Their site</a>` : ""}
         ${p.website && p.maps_url ? " &middot; " : ""}
-        ${p.maps_url ? `<a href="${p.maps_url}" target="_blank" rel="noopener">On Maps</a>` : ""}
+        ${p.maps_url ? `<a href="${safeUrl(p.maps_url)}" target="_blank" rel="noopener">On Maps</a>` : ""}
       </p></li>`).join("");
   } else hide($("x-places"));
 
@@ -1628,7 +1642,7 @@ function chatSuggestions(){
     : ["I make $2,400 a month and want a 2 bed in Blacksburg",
        "Help me work out a place I found", "What does this app do?"];
   $("chat-sug").innerHTML = list.map(q =>
-    `<button class="ghost chat-q">${q}</button>`).join("");
+    `<button class="ghost chat-q">${esc(q)}</button>`).join("");
   $("chat-sug").querySelectorAll(".chat-q").forEach(b =>
     b.addEventListener("click", () => { $("chat-input").value = b.textContent; chatSend(); }));
 }
