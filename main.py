@@ -602,6 +602,8 @@ explicitly stated. Return strict JSON with these keys and nothing else:
                          listing NAMES but does not specify the type of"],
  "red_flags": [{"phrase": "the wording from the listing, under 12 words",
                 "means": "what it actually means for the renter, one line"}],
+ "field_sources": {"rent": "which source that came from", "bedrooms": "...",
+                   "and so on for every field you filled": "..."},
  "notes": "short string naming anything that was NOT stated"}
 
 The unit_feature ids you may use, and nothing else:
@@ -618,6 +620,14 @@ Rules for unit_features:
 
 The ambiguous_feature ids you may use, and nothing else:
 heating_type_unknown, cooling_type_unknown, laundry_type_unknown
+
+Rules for field_sources:
+- For every field you filled in with a value, say which source it came from.
+- Use exactly one of these words: screenshot, link, text, told. Nothing else.
+  "told" means the person told you directly in their own notes.
+- If a figure appeared in more than one source, name the one you trusted, and
+  explain the conflict in notes.
+- Leave out any field you did not fill in.
 
 Rules for ambiguous_features:
 - Use these when the listing names a category but not the type, which is very
@@ -793,7 +803,7 @@ def parse_listing_from_url(url):
         return None, str(e)[:120]
 
 
-def parse_listing(text=None, images=None):
+def parse_listing(text=None, images=None, url=None, user_notes=None):
     """Model reads a listing from text, from one or more screenshots, or
     both. Several screenshots matter here: the price is at the top of a
     listing page and the fees are usually in a separate section much further
@@ -802,35 +812,96 @@ def parse_listing(text=None, images=None):
         return {"parsed": {}, "source": "unavailable",
                 "notes": "Model not configured. Enter the numbers yourself."}
     images = images or []
-    key = _cache_key(text, images)
+    used = []
+    key = _cache_key("|".join(filter(None, [text, url, user_notes])), images)
     cached = cache_get(key)
     if cached is not None:
         return {"parsed": cached, "source": "model", "cached": True,
+                "used": cached.get("_used", []),
+                "link_status": cached.get("_link_status"),
                 "notes": cached.get("notes", "")}
     try:
         from google.genai import types
 
         parts = [PARSE_PROMPT]
+
         if text:
             parts.append("LISTING TEXT:\n" + text[:6000])
-        for i, img in enumerate(images[:6], 1):
+            used.append("text")
+
+        for img in images[:6]:
             parts.append(types.Part.from_bytes(
                 data=base64.b64decode(img.get("data")),
                 mime_type=img.get("mime") or "image/jpeg"))
         if images:
+            used.append("screenshots")
             parts.append(
                 "The %d image(s) above are screenshots of ONE rental listing, "
                 "taken from different parts of the same page. Treat them as a "
                 "single listing. Read every number in them, including fee "
-                "tables, pricing panels and move in specials. Apply the rules."
+                "tables, pricing panels and move in specials."
                 % len(images[:6]))
-        resp = client.models.generate_content(model=MODEL_NAME, contents=parts)
+
+        if url:
+            used.append("link")
+            parts.append("THE SAME LISTING IS AT THIS ADDRESS:\n" + url +
+                         "\nRead it as well and treat it as the same listing.")
+
+        # Things the person knows that no source states. A landlord quoting a
+        # parking price on the phone is better evidence than anything on the
+        # page, so it outranks the rest.
+        if user_notes:
+            used.append("what you told us")
+            parts.append(
+                "THE PERSON ALSO TOLD US THE FOLLOWING. Treat this as more "
+                "reliable than the listing, because they may have asked the "
+                "landlord directly. Where it conflicts with the listing, "
+                "believe this and say so in notes:\n" + user_notes[:2000])
+
+        if len(used) > 1:
+            parts.append(
+                "You have %s. They describe ONE place. Merge them into a "
+                "single answer. Where two sources disagree on a figure, say "
+                "which you used and why in notes." % (" and ".join(used)))
+
+        cfg = None
+        if url:
+            cfg = types.GenerateContentConfig(
+                tools=[types.Tool(url_context=types.UrlContext())])
+
+        resp = client.models.generate_content(
+            model=MODEL_NAME, contents=parts, config=cfg)
         data = _json_from_model(resp.text)
+
+        # Did the link actually come back, or did the model just see a URL it
+        # could not open. Worth knowing, because "I gave it the link" and
+        # "it read the link" are different things and only one of them helps.
+        link_status = None
+        if url:
+            link_status = "failed"
+            try:
+                meta = resp.candidates[0].url_context_metadata
+                for entry in (getattr(meta, "url_metadata", None) or []):
+                    if "SUCCESS" in str(getattr(entry, "url_retrieval_status", "")):
+                        link_status = "ok"
+            except Exception:
+                # No metadata to inspect. Judge by whether the model says it
+                # used the link for anything.
+                srcs = (data.get("field_sources") or {}).values()
+                link_status = "ok" if any(v == "link" for v in srcs) else "unknown"
+            if link_status != "ok" and "link" in used:
+                used.remove("link")
+
+        data["_used"] = used
+        data["_link_status"] = link_status
         cache_put(key, data)
         return {"parsed": data, "source": "model", "cached": False,
+                "used": used, "link_status": link_status,
                 "notes": data.get("notes", "")}
     except Exception as e:
-        return {"parsed": {}, "source": "error", "notes": str(e)[:300]}
+        return {"parsed": {}, "source": "error", "used": used,
+                "link_status": "failed" if url else None,
+                "notes": str(e)[:300]}
 
 
 # Many listing sites block automated readers. We try once, politely, and fall
@@ -839,8 +910,24 @@ BLOCKED_HINTS = ("captcha", "are you a human", "access denied",
                  "enable javascript", "request blocked", "unusual traffic")
 
 
+def normalise_url(url):
+    """People paste addresses without the protocol, with a trailing space,
+    or wrapped in whatever their browser copied. Take what they meant."""
+    u = (url or "").strip().strip("<>\"'")
+    if not u:
+        return None
+    if u.startswith("//"):
+        u = "https:" + u
+    elif not re.match(r"^https?://", u, re.I):
+        if not re.match(r"^[\w.-]+\.[a-z]{2,}", u, re.I):
+            return None               # not address shaped at all
+        u = "https://" + u
+    return u
+
+
 def fetch_listing(url):
-    if not re.match(r"^https?://", url or ""):
+    url = normalise_url(url)
+    if not url:
         return None, "That does not look like a web address."
     try:
         r = requests.get(
@@ -1324,6 +1411,207 @@ def api_sharpen():
     return jsonify(what_would_sharpen(b.get("parsed"), b.get("form")))
 
 
+CHAT_PROMPT = """You are helping someone who is renting on their own for the
+first time. They are using a tool that works out what a place actually costs.
+You can talk to them AND you can fill in the tool for them.
+
+Everything in CURRENT STATE below has ALREADY been calculated by the
+application. Those figures are final and correct.
+
+Return strict JSON, nothing else:
+
+{"reply": "what you say to them, 1 to 4 short sentences",
+ "set_fields": {"field_name": value, ...},
+ "run": "analyse" or "explore" or null,
+ "switch_tab": "check" or "explore" or null}
+
+set_fields may only use these names, and nothing else.
+
+On the check a place tab:
+  rent, bedrooms, state, roommates, income, parking, other_fees,
+  one_time_fees, lease_months, commute_mode, commute_miles,
+  listing_address, destination, has_pet
+
+On the explore an area tab:
+  x_city, x_state, x_zip, x_bedrooms, x_baths, x_roommates, x_income,
+  x_max, x_destination, x_commute_mode
+
+How to behave:
+- When they tell you something that belongs in a field, PUT IT THERE. "I make
+  2400 a month" means set income. "It is a 2 bed in Blacksburg" means set
+  bedrooms and the city. Do not describe the field to them, fill it.
+- income is MONTHLY after tax. A yearly figure must be divided by 12. "60k"
+  is yearly, so 5000.
+- roommates is the total number of people splitting rent, including them.
+- Set run to "analyse" only when the check tab has both a rent and an income,
+  either already in the state or because you just set them. Set it to
+  "explore" only when there is somewhere to search and an income.
+- Use switch_tab when what they are asking for lives on the other tab.
+  Finding places is the explore tab. Working out one listing is the check tab.
+- If something is missing, ask for ONE thing at a time, the one that matters
+  most. Do not ask for five things in a paragraph.
+
+Hard rules:
+- NEVER do arithmetic yourself and NEVER state a dollar figure that is not
+  already in CURRENT STATE. If they ask what a roommate would do to the
+  number, set the roommates field and run it. The application computes, you
+  do not.
+- NEVER invent a value for a field they have not told you. Leave it out.
+- Keep reply short. They are mid task.
+- Plain language. They do not know what RUBS or net effective rent means
+  unless you tell them.
+- Do not give legal advice, and do not tell them whether to take the place.
+- If they ask about something other than housing or this tool, say that is
+  not what you are for.
+
+CURRENT STATE:
+"""
+
+# Only these can be written, and each is checked before it is applied. A
+# model that returns a field name we do not recognise, or a value that is
+# not the right shape, changes nothing.
+CHAT_NUMERIC = {
+    "rent": (0, 50000), "bedrooms": (0, 6), "roommates": (1, 8),
+    "income": (0, 500000), "parking": (0, 2000), "other_fees": (0, 5000),
+    "one_time_fees": (0, 20000), "lease_months": (1, 36),
+    "commute_miles": (0, 300),
+    "x_bedrooms": (0, 4), "x_baths": (1, 5), "x_roommates": (1, 8),
+    "x_income": (0, 500000), "x_max": (0, 20000),
+}
+CHAT_TEXT = {"listing_address", "destination", "x_city", "x_destination"}
+CHAT_STATE = {"state", "x_state"}
+CHAT_MODE = {"commute_mode", "x_commute_mode"}
+CHAT_BOOL = {"has_pet"}
+
+
+def clean_chat_fields(fields):
+    """Nothing the model returns reaches a form field without passing here."""
+    out = {}
+    for k, v in (fields or {}).items():
+        if v is None or v == "":
+            continue
+        if k in CHAT_NUMERIC:
+            lo, hi = CHAT_NUMERIC[k]
+            try:
+                num = float(v)
+            except Exception:
+                continue
+            if k in ("income", "x_income") and num > 25000:
+                num = num / 12          # that was a yearly figure
+            if not (lo <= num <= hi):
+                continue
+            out[k] = round(num, 2) if num % 1 else int(num)
+        elif k in CHAT_STATE:
+            st = str(v).upper().strip()[:2]
+            if st in CENTS_PER_KWH:
+                out[k] = st
+        elif k in CHAT_MODE:
+            mode = str(v).lower().strip()
+            if mode in MODE_MAP:
+                out[k] = mode
+        elif k in CHAT_BOOL:
+            out[k] = bool(v)
+        elif k in CHAT_TEXT:
+            text = str(v).strip()[:120]
+            if text:
+                out[k] = text
+        elif k == "x_zip":
+            z = re.sub(r"\D", "", str(v))[:5]
+            if len(z) == 5:
+                out[k] = z
+    return out
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    """Questions about the figures already on their screen.
+
+    This is not a general assistant. It is given the computed state and told
+    to answer from it, to refuse arithmetic, and to point at the app rather
+    than approximate. The app is better at the maths than the model is, and
+    the model is told so.
+    """
+    body = request.json or {}
+    messages = body.get("messages") or []
+    state = body.get("state") or {}
+    if not messages:
+        return jsonify(error="Nothing to answer."), 400
+    if client is None:
+        return jsonify(error="Not available right now."), 503
+
+    # Only the computed shape of things. No income, no address.
+    safe = {}
+    r = state.get("result") or {}
+    if r:
+        safe["this_place"] = {
+            "advertised_rent": round(r.get("advertised_monthly") or 0),
+            "true_monthly_cost": round(r.get("total") or 0),
+            "hidden_per_month": round(r.get("hidden_monthly") or 0),
+            "share_of_income_percent": round((r.get("burden") or 0) * 100),
+            "verdict": r.get("label"),
+            "left_after_housing": round(r.get("left_over") or 0),
+            "breakdown": {k: round(v) for k, v in (r.get("breakdown") or {}).items()
+                          if v},
+            "questions_to_ask": [f.get("name") for f in (r.get("ask_about") or [])],
+            "move_in_special": bool(r.get("concession")),
+        }
+    sl = state.get("shortlist") or []
+    if sl:
+        safe["shortlist"] = [{
+            "name": str(p.get("name") or "")[:50],
+            "advertised_rent": round(p.get("advertised") or 0),
+            "true_monthly_cost": round(p.get("total") or 0),
+            "share_of_income_percent": round((p.get("burden") or 0) * 100),
+        } for p in sl[:8]]
+    f = state.get("form") or {}
+    safe["which_tab_they_are_on"] = state.get("tab") or "check"
+    safe["fields_already_filled"] = {k: v for k, v in f.items() if v}
+    safe["fields_still_blank"] = [k for k, v in f.items() if not v]
+    if not safe.get("this_place"):
+        safe["note"] = "They have not analysed a place yet."
+
+    try:
+        from google.genai import types
+
+        history = []
+        for m in messages[-12:]:
+            role = "model" if m.get("role") == "assistant" else "user"
+            text = str(m.get("text") or "")[:1500]
+            if text:
+                history.append(types.Content(
+                    role=role, parts=[types.Part.from_text(text=text)]))
+        if not history:
+            return jsonify(error="Nothing to answer."), 400
+
+        cfg = types.GenerateContentConfig(
+            system_instruction=CHAT_PROMPT + json.dumps(safe, indent=1),
+            max_output_tokens=700)
+        resp = client.models.generate_content(
+            model=MODEL_NAME, contents=history, config=cfg)
+
+        raw = (resp.text or "").strip()
+        try:
+            data = _json_from_model(raw)
+        except Exception:
+            # It answered in prose instead of JSON. Still useful, just inert.
+            return jsonify(reply=raw or "I did not catch that. Try again.",
+                           set_fields={}, run=None, switch_tab=None)
+
+        run = data.get("run")
+        if run not in ("analyse", "explore"):
+            run = None
+        tab = data.get("switch_tab")
+        if tab not in ("check", "explore"):
+            tab = None
+
+        return jsonify(
+            reply=(data.get("reply") or "").strip() or "Done.",
+            set_fields=clean_chat_fields(data.get("set_fields")),
+            run=run, switch_tab=tab)
+    except Exception as e:
+        return jsonify(error=str(e)[:200]), 500
+
+
 INTENT_PROMPT = """Someone described their housing situation in their own
 words. Turn it into search parameters. Return strict JSON, nothing else:
 
@@ -1515,35 +1803,55 @@ def api_parse():
     if body.get("image"):  # older clients sent a single image
         images = [{"data": body["image"], "mime": body.get("mime", "image/png")}]
 
-    note = None
-    if url and not images:
-        # Let the model fetch it first. It reaches pages we cannot.
-        data, err = parse_listing_from_url(url)
-        if data:
-            data["from_url"] = True
-            cache_put(_cache_key("url:" + url, []), data)
-            return jsonify(
-                parsed=data, source="model", from_url=True,
-                notes=((data.get("notes") or "") +
-                       " Read from the link rather than a screenshot, so the "
-                       "price may be a cached version. Check it against the "
-                       "live page.").strip())
-
+    user_notes = (body.get("user_notes") or "").strip()
     if url:
+        url = normalise_url(url) or None
+
+    if not text and not images and not url and not user_notes:
+        return jsonify(error="Give us a screenshot, a link, or some text."), 400
+
+    # One call over everything given. The model merges the sources rather
+    # than us picking a winner, because a screenshot of the pricing panel and
+    # a link to the fees page are two halves of the same listing.
+    out = parse_listing(text=text or None, images=images, url=url,
+                        user_notes=user_notes or None)
+
+    # If that came back empty and there is a link, fall back to fetching it
+    # ourselves. Our fetch gets blocked by the big sites, but it is current
+    # where it works.
+    p = out.get("parsed") or {}
+    if url and not any(p.get(k) is not None
+                       for k in ("rent", "rent_min", "bedrooms")):
         fetched, err = fetch_listing(url)
         if fetched:
-            text = ((text or "") + "\n" + fetched).strip()
-        else:
-            note = err
-            if not text and not images:
-                return jsonify(parsed={}, source="blocked", notes=err)
+            out = parse_listing(
+                text=((text or "") + "\n" + fetched).strip(),
+                images=images, user_notes=user_notes or None)
+            out.setdefault("used", []).append("link, fetched directly")
+        elif err and not images and not text:
+            return jsonify(parsed={}, source="blocked", notes=err,
+                           used=out.get("used", []))
 
-    if not text and not images:
-        return jsonify(error="Give us a screenshot, a link, or the text."), 400
-
-    out = parse_listing(text=text or None, images=images)
-    if note:
-        out["notes"] = (note + " " + (out.get("notes") or "")).strip()
+    if url:
+        status = out.get("link_status")
+        if status == "ok":
+            out["from_url"] = True
+            out["notes"] = ((out.get("notes") or "") +
+                            " Part of this came from the link, which may be a "
+                            "cached copy. Check the price against the live "
+                            "page.").strip()
+        elif status == "failed":
+            out["link_failed"] = True
+            out["link_message"] = (
+                "That link could not be read. Big listing sites block "
+                "automated readers, and pages posted recently are often not "
+                "indexed yet. Everything below came from your other sources. "
+                "A screenshot of the page will work.")
+        elif status == "unknown":
+            out["link_message"] = (
+                "It is not clear whether the link was read. Nothing below is "
+                "attributed to it, so treat a screenshot as the reliable "
+                "source.")
     return jsonify(out)
 
 

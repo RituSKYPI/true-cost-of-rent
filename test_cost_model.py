@@ -467,6 +467,87 @@ class TestIntentNormalisation(unittest.TestCase):
         self.assertEqual(main.normalise_intent(None), {})
 
 
+class TestUrlNormalisation(unittest.TestCase):
+    """People paste addresses in every shape there is."""
+
+    def test_a_proper_url_is_left_alone(self):
+        self.assertEqual(main.normalise_url("https://a.com/b"), "https://a.com/b")
+
+    def test_http_is_allowed(self):
+        self.assertEqual(main.normalise_url("http://a.com/b"), "http://a.com/b")
+
+    def test_a_missing_protocol_is_added(self):
+        self.assertEqual(main.normalise_url("www.apartments.com/x/"),
+                         "https://www.apartments.com/x/")
+        self.assertEqual(main.normalise_url("apartments.com/x/"),
+                         "https://apartments.com/x/")
+
+    def test_a_protocol_relative_url_works(self):
+        self.assertEqual(main.normalise_url("//a.com/b"), "https://a.com/b")
+
+    def test_whitespace_and_quotes_are_stripped(self):
+        self.assertEqual(main.normalise_url('  "https://a.com"  '), "https://a.com")
+
+    def test_something_that_is_not_an_address_is_rejected(self):
+        self.assertIsNone(main.normalise_url("just some words"))
+        self.assertIsNone(main.normalise_url(""))
+        self.assertIsNone(main.normalise_url(None))
+
+
+class TestChatFieldWriting(unittest.TestCase):
+    """The assistant can fill in the form. Nothing it returns reaches a
+    field without passing this, because a model writing directly into the
+    inputs that drive the calculation is the one place a bad value would do
+    real damage."""
+
+    def test_a_monthly_income_passes(self):
+        self.assertEqual(main.clean_chat_fields({"income": 2400}),
+                         {"income": 2400})
+
+    def test_a_yearly_income_is_converted(self):
+        self.assertEqual(main.clean_chat_fields({"income": 60000}),
+                         {"income": 5000})
+
+    def test_a_field_name_we_do_not_allow_is_dropped(self):
+        self.assertEqual(main.clean_chat_fields({"delete_everything": 1}), {})
+        self.assertEqual(main.clean_chat_fields({"__proto__": "x"}), {})
+
+    def test_out_of_range_values_are_dropped_not_clamped(self):
+        # Clamping would quietly turn a misread into a plausible wrong
+        # number. Dropping it leaves the field blank, which is visible.
+        self.assertEqual(main.clean_chat_fields({"bedrooms": 99}), {})
+        self.assertEqual(main.clean_chat_fields({"rent": -5}), {})
+
+    def test_text_where_a_number_belongs_is_dropped(self):
+        self.assertEqual(main.clean_chat_fields({"income": "lots"}), {})
+
+    def test_state_must_be_a_real_code(self):
+        self.assertEqual(main.clean_chat_fields({"state": "va"}), {"state": "VA"})
+        self.assertEqual(main.clean_chat_fields({"state": "Virginia"}), {})
+
+    def test_commute_mode_must_be_one_we_handle(self):
+        self.assertEqual(main.clean_chat_fields({"commute_mode": "Drive"}),
+                         {"commute_mode": "drive"})
+        self.assertEqual(main.clean_chat_fields({"commute_mode": "hoverboard"}), {})
+
+    def test_zip_must_be_five_digits(self):
+        self.assertEqual(main.clean_chat_fields({"x_zip": "24060"}),
+                         {"x_zip": "24060"})
+        self.assertEqual(main.clean_chat_fields({"x_zip": "abc"}), {})
+
+    def test_explore_fields_are_allowed_too(self):
+        out = main.clean_chat_fields({"x_city": "Blacksburg", "x_bedrooms": 2})
+        self.assertEqual(out, {"x_city": "Blacksburg", "x_bedrooms": 2})
+
+    def test_text_is_length_limited(self):
+        out = main.clean_chat_fields({"destination": "x" * 500})
+        self.assertLessEqual(len(out["destination"]), 120)
+
+    def test_empty_and_null_are_ignored(self):
+        self.assertEqual(main.clean_chat_fields({"rent": None, "state": ""}), {})
+        self.assertEqual(main.clean_chat_fields(None), {})
+
+
 class TestNothingIsInvented(unittest.TestCase):
     """The model is never allowed to produce a figure. These check that the
     analysis is a pure function of its inputs and nothing else."""

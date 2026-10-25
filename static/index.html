@@ -172,6 +172,34 @@ tfoot td{font-weight:700;border-bottom:0;border-top:1.5px solid var(--line)}
 .sub{font-size:.875rem;color:var(--muted)}
 .tiny{font-size:.8125rem;color:var(--faint)}
 .hidden{display:none !important}
+.chat-open{
+  position:fixed;right:20px;bottom:20px;z-index:50;border-radius:999px;
+  padding:13px 20px;box-shadow:0 6px 20px rgba(22,32,46,.22);
+}
+.chat-panel{
+  position:fixed;right:20px;bottom:20px;z-index:51;width:min(380px,calc(100vw - 40px));
+  max-height:min(560px,calc(100vh - 40px));display:flex;flex-direction:column;
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  box-shadow:0 12px 40px rgba(22,32,46,.26);overflow:hidden;
+}
+.chat-head{display:flex;justify-content:space-between;align-items:center;
+  gap:10px;padding:13px 15px;border-bottom:1px solid var(--line-soft)}
+.chat-head strong{font-size:.9375rem}
+.chat-log{flex:1;overflow-y:auto;padding:14px 15px;display:flex;
+  flex-direction:column;gap:11px}
+.msg{max-width:88%;padding:9px 13px;border-radius:13px;font-size:.9375rem;
+  line-height:1.5;white-space:pre-wrap}
+.msg.you{align-self:flex-end;background:var(--ink);color:var(--surface);
+  border-bottom-right-radius:4px}
+.msg.it{align-self:flex-start;background:var(--line-soft);
+  border-bottom-left-radius:4px}
+.msg.err{align-self:flex-start;background:var(--over-bg);color:var(--over)}
+.chat-foot{border-top:1px solid var(--line-soft);padding:11px 12px;
+  display:flex;gap:8px;align-items:flex-end}
+.chat-foot textarea{min-height:40px;max-height:110px;resize:none;
+  padding:9px 11px;font-size:.9375rem}
+.chat-sug{display:flex;gap:7px;flex-wrap:wrap;padding:0 15px 12px}
+.chat-sug button{font-size:.8125rem;padding:5px 11px;border-radius:999px}
 .skip{position:absolute;left:-9999px;top:0;background:var(--ink);color:#fff;
   padding:12px 18px;border-radius:0 0 9px 0;z-index:100;font-weight:600}
 .skip:focus{left:0}
@@ -307,25 +335,36 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
   <div id="shots" class="shots hidden"></div>
 
   <div style="margin-top:18px">
-    <label for="url">Or a link</label>
-    <input type="text" id="url" placeholder="https://" inputmode="url">
-    <p class="tiny" style="margin:5px 0 0">The model fetches the page itself,
-       which reaches sites that block us directly. It can return a cached
-       version though, so a screenshot is still more reliable.</p>
+    <label for="url">A link to the listing</label>
+    <input type="text" id="url" placeholder="apartments.com/..." inputmode="url">
+    <p class="tiny" style="margin:5px 0 0">Used alongside your screenshots,
+       not instead of them. It can return a cached copy, so where the two
+       disagree the screenshot wins.</p>
+  </div>
+
+  <div style="margin-top:18px">
+    <label for="user_notes">Anything you already know</label>
+    <textarea id="user_notes" style="min-height:72px"
+      placeholder="I called and they said parking is $50 and there is a $300 pet fee."></textarea>
+    <p class="tiny" style="margin:5px 0 0">Things the listing does not say.
+       If the leasing office has told you something, put it here. It is
+       treated as more reliable than the listing.</p>
   </div>
 
   <details>
-    <summary>Or type the listing out</summary>
+    <summary>Or paste the listing text</summary>
     <label for="listing" style="margin-top:12px">Listing text</label>
     <textarea id="listing"
       placeholder="2BR/1BA, $1,150/mo. Water and trash included. Parking $45/mo."></textarea>
   </details>
 
   <div class="row" style="margin-top:18px">
-    <button id="parse">Read it</button>
+    <button id="parse">Read everything</button>
     <button id="skip" class="ghost">Enter it myself</button>
     <span id="parse-status" class="sub" role="status" aria-live="polite"></span>
   </div>
+  <div id="used-note" class="note hidden" style="margin-top:14px"></div>
+  <div id="link-note" class="note hidden" style="margin-top:12px"></div>
 </section>
 
 <section class="panel hidden" id="inputs" aria-labelledby="h-inputs">
@@ -629,6 +668,24 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
 
 </main>
 
+<button id="chat-open" class="chat-open" aria-expanded="false"
+        aria-controls="chat-panel">Ask or tell it something</button>
+
+<section id="chat-panel" class="chat-panel hidden" role="dialog"
+         aria-label="Ask about your numbers" aria-modal="false">
+  <div class="chat-head">
+    <strong>Tell it what you know</strong>
+    <button id="chat-close" class="ghost sm" aria-label="Close">Close</button>
+  </div>
+  <div id="chat-log" class="chat-log" role="log" aria-live="polite"></div>
+  <div id="chat-sug" class="chat-sug"></div>
+  <div class="chat-foot">
+    <label for="chat-input" class="vh">Your question</label>
+    <textarea id="chat-input" placeholder="Tell me about the place, or ask about your numbers"></textarea>
+    <button id="chat-send">Send</button>
+  </div>
+</section>
+
 <footer class="wrap">
   <p>Every cost is computed in code from what you entered. The language model
      reads listings and writes explanations. It never produces a number.</p>
@@ -786,6 +843,27 @@ $("skip").addEventListener("click", () => {
   show($("inputs")); $("rent").focus(); refreshSharpen();
 });
 
+// Which of the sources a given value came from. The model reports this per
+// field, so a figure read off a screenshot and one the person typed in are
+// not presented as the same kind of evidence.
+const SOURCE_WORDS = {
+  screenshot: "From your screenshot",
+  link:       "From the link, may be cached",
+  text:       "From the text you pasted",
+  told:       "From what you told us"
+};
+const FIELD_KEYS = {
+  rent:"rent", bedrooms:"bedrooms", state:"state", parking:"parking",
+  other_fees:"other_fees", one_time_fees:"one_time_fees",
+  lease_months:"lease_months"
+};
+
+function sourceLabel(id){
+  const key = FIELD_KEYS[id] || id;
+  const src = (lastParsed.field_sources || {})[key];
+  return SOURCE_WORDS[src] || "Read from the listing";
+}
+
 function setField(id, val, label){
   const el = $(id);
   let tag = el.nextElementSibling;
@@ -797,9 +875,7 @@ function setField(id, val, label){
   if(val != null && val !== ""){
     el.value = val; el.classList.add("read");
     tag.className = "prov read";
-    tag.textContent = label ||
-      (lastParsed.from_url ? "Read from the link, may be cached"
-                           : "Read from the listing");
+    tag.textContent = label || sourceLabel(id);
   }else{
     el.classList.add("missing");
     tag.className = "prov missing";
@@ -809,16 +885,21 @@ function setField(id, val, label){
 
 $("parse").addEventListener("click", async () => {
   const text = $("listing").value.trim(), url = $("url").value.trim();
-  if(!text && !url && !images.length){
-    $("parse-status").textContent = "Add a screenshot, a link, or some text first."; return;
+  const userNotes = $("user_notes").value.trim();
+  if(!text && !url && !images.length && !userNotes){
+    $("parse-status").textContent =
+      "Add a screenshot, a link, or tell it what you know."; return;
   }
   $("parse").disabled = true;
-  $("parse-status").textContent = images.length
-    ? "Reading " + images.length + (images.length>1?" screenshots":" screenshot") : "Reading";
+  const srcCount = (images.length?1:0)+(url?1:0)+(text?1:0)+(userNotes?1:0);
+  $("parse-status").textContent = srcCount > 1
+    ? "Reading " + srcCount + " sources and merging them"
+    : (images.length ? "Reading the screenshot" : "Reading");
   try{
     const r = await fetch("/api/parse",{method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({text, url, images: images.map(i=>({data:i.data,mime:i.mime}))})});
+      body: JSON.stringify({text, url, user_notes: userNotes,
+        images: images.map(i=>({data:i.data,mime:i.mime}))})});
     if(!r.ok){
       const body = (await r.text()).slice(0,200);
       $("parse-status").textContent =
@@ -878,8 +959,29 @@ $("parse").addEventListener("click", async () => {
     document.querySelectorAll(".util").forEach(c => c.checked = utils.includes(c.value));
     const un = $("util-note");
     un.className = "prov " + (p.utilities_stated ? "read" : "missing");
-    un.textContent = p.utilities_stated ? "Read from the listing."
+    un.textContent = p.utilities_stated
+      ? ((SOURCE_WORDS[(p.field_sources||{}).utilities_included] ||
+          "Read from the listing") + ".")
       : "The listing did not say. Assume you pay all of them unless you check.";
+
+    const usedBox = $("used-note"), usedList = d.used || [];
+    usedBox.classList.toggle("hidden", usedList.length === 0);
+    if(usedList.length){
+      usedBox.innerHTML =
+        `<p><strong>Read from ${usedList.length === 1 ? "one source"
+           : usedList.length + " sources, merged"}.</strong></p>
+         <p class="sub">${usedList.join(", ")}.</p>`;
+    }
+
+    const linkBox = $("link-note");
+    linkBox.classList.toggle("hidden", !d.link_message);
+    if(d.link_message){
+      linkBox.className = "note " + (d.link_failed ? "warn" : "");
+      linkBox.innerHTML =
+        `<p><strong>${d.link_failed ? "The link did not work."
+                                    : "Not sure about the link."}</strong></p>
+         <p class="sub">${d.link_message}</p>`;
+    }
 
     const cached = $("cached-note");
     cached.classList.toggle("hidden", !d.from_url);
@@ -956,6 +1058,25 @@ async function refreshSharpen(){
 document.querySelectorAll(".util").forEach(c =>
   c.addEventListener("change", () => {
     lastParsed.utilities_stated = true;
+    const usedBox = $("used-note"), usedList = d.used || [];
+    usedBox.classList.toggle("hidden", usedList.length === 0);
+    if(usedList.length){
+      usedBox.innerHTML =
+        `<p><strong>Read from ${usedList.length === 1 ? "one source"
+           : usedList.length + " sources, merged"}.</strong></p>
+         <p class="sub">${usedList.join(", ")}.</p>`;
+    }
+
+    const linkBox = $("link-note");
+    linkBox.classList.toggle("hidden", !d.link_message);
+    if(d.link_message){
+      linkBox.className = "note " + (d.link_failed ? "warn" : "");
+      linkBox.innerHTML =
+        `<p><strong>${d.link_failed ? "The link did not work."
+                                    : "Not sure about the link."}</strong></p>
+         <p class="sub">${d.link_message}</p>`;
+    }
+
     const cached = $("cached-note");
     cached.classList.toggle("hidden", !d.from_url);
     if(d.from_url){
@@ -1427,6 +1548,159 @@ function renderExplore(d, beds){
       .scrollIntoView({behavior:"smooth", block:"start"});
   }
 }
+
+/* ---------- ask about your numbers ----------
+   Given the figures already computed and told to answer from them. It is
+   instructed not to do arithmetic: the app is better at that than the model
+   is, so questions like "what if I had a roommate" get pointed back at the
+   field rather than estimated. */
+let chatHistory = [];
+
+// Every field the assistant is allowed to write, mapped to its element.
+const CHAT_FIELDS = {
+  rent:"rent", bedrooms:"bedrooms", state:"state", roommates:"roommates",
+  income:"income", parking:"parking", other_fees:"other_fees",
+  one_time_fees:"one_time_fees", lease_months:"lease_months",
+  commute_mode:"commute_mode", commute_miles:"commute_miles",
+  listing_address:"listing_address", destination:"destination",
+  has_pet:"has_pet",
+  x_city:"x-city", x_state:"x-state", x_zip:"x-zip", x_bedrooms:"x-bedrooms",
+  x_baths:"x-baths", x_roommates:"x-roommates", x_income:"x-income",
+  x_max:"x-max", x_destination:"x-destination", x_commute_mode:"x-commute-mode"
+};
+
+function chatState(){
+  const f = {};
+  Object.entries(CHAT_FIELDS).forEach(([key, id]) => {
+    const el = $(id);
+    if(!el) return;
+    f[key] = el.type === "checkbox" ? el.checked : el.value;
+  });
+  return {
+    result: lastResult, shortlist: shortlist, form: f,
+    tab: $("tab-explore").getAttribute("aria-selected") === "true"
+      ? "explore" : "check"
+  };
+}
+
+// Apply what it filled in, visibly. The user sees every value land in a
+// field they can change, and nothing is computed from any of it until the
+// normal button runs.
+function chatApply(fields){
+  const names = [];
+  Object.entries(fields || {}).forEach(([key, val]) => {
+    const el = $(CHAT_FIELDS[key]);
+    if(!el) return;
+    if(el.type === "checkbox"){ el.checked = !!val; }
+    else { el.value = val; el.classList.add("read"); }
+    const tag = el.nextElementSibling;
+    if(tag && tag.classList && tag.classList.contains("prov")){
+      tag.className = "prov read";
+      tag.textContent = "Filled in from what you said";
+    }
+    names.push(key.replace(/^x_/, "").replace(/_/g, " "));
+  });
+  return names;
+}
+
+function chatSay(text, who){
+  const el = document.createElement("div");
+  el.className = "msg " + who;
+  el.textContent = text;
+  $("chat-log").appendChild(el);
+  $("chat-log").scrollTop = $("chat-log").scrollHeight;
+  return el;
+}
+
+function chatSuggestions(){
+  const has = !!lastResult;
+  const list = has
+    ? ["Why is it that percentage?", "What if I had a roommate?",
+       "What should I ask the landlord?"]
+    : ["I make $2,400 a month and want a 2 bed in Blacksburg",
+       "Help me work out a place I found", "What does this app do?"];
+  $("chat-sug").innerHTML = list.map(q =>
+    `<button class="ghost chat-q">${q}</button>`).join("");
+  $("chat-sug").querySelectorAll(".chat-q").forEach(b =>
+    b.addEventListener("click", () => { $("chat-input").value = b.textContent; chatSend(); }));
+}
+
+async function chatSend(){
+  const text = $("chat-input").value.trim();
+  if(!text) return;
+  $("chat-input").value = "";
+  $("chat-sug").innerHTML = "";
+  chatSay(text, "you");
+  chatHistory.push({role:"user", text});
+  const thinking = chatSay("Thinking", "it");
+  $("chat-send").disabled = true;
+  try{
+    const r = await fetch("/api/chat",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({messages: chatHistory, state: chatState()})});
+    const d = await r.json();
+    thinking.remove();
+    if(!r.ok || d.error){
+      chatSay(d.error || "Could not answer that right now.", "err");
+    }else{
+      chatSay(d.reply, "it");
+      chatHistory.push({role:"assistant", text:d.reply});
+
+      if(d.switch_tab) setMode(d.switch_tab);
+
+      const filled = chatApply(d.set_fields);
+      if(filled.length){
+        chatSay("Filled in: " + filled.join(", ") + ". Have a look and change "
+                + "anything I got wrong.", "it");
+      }
+
+      if(d.run === "analyse"){
+        setMode("check");
+        chatSay("Working it out.", "it");
+        $("calc").click();
+      }else if(d.run === "explore"){
+        setMode("explore");
+        chatSay("Searching that area.", "it");
+        $("explore").click();
+      }
+    }
+  }catch(e){
+    thinking.remove();
+    chatSay("Could not reach the server.", "err");
+  }
+  $("chat-send").disabled = false;
+  $("chat-input").focus();
+}
+
+function chatToggle(open){
+  $("chat-panel").classList.toggle("hidden", !open);
+  $("chat-open").classList.toggle("hidden", open);
+  $("chat-open").setAttribute("aria-expanded", String(open));
+  if(open){
+    if(!chatHistory.length){
+      chatSay(lastResult
+        ? "Ask me about the figures on your screen, or just tell me what has "
+          + "changed and I will update them."
+        : "Tell me about the place you are looking at, or what you are "
+          + "looking for, and I will fill it in and work it out.",
+        "it");
+    }
+    chatSuggestions();
+    $("chat-input").focus();
+  }else{
+    $("chat-open").focus();
+  }
+}
+
+$("chat-open").addEventListener("click", () => chatToggle(true));
+$("chat-close").addEventListener("click", () => chatToggle(false));
+$("chat-send").addEventListener("click", chatSend);
+$("chat-input").addEventListener("keydown", e => {
+  if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); chatSend(); }
+});
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape" && !$("chat-panel").classList.contains("hidden")) chatToggle(false);
+});
 
 loadShortlist();
 drawShortlist();
