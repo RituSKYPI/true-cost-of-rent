@@ -535,6 +535,21 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
      what is actually there. We do not put a price on a specific building
      unless that building told us one.</p>
 
+  <div style="border:1.5px solid var(--ink);border-radius:10px;padding:16px;
+       margin-bottom:20px">
+    <label for="x-say">Just describe your situation</label>
+    <p class="tiny" style="margin:0 0 8px">If you do not know what to put in
+       the boxes, say it in your own words instead. It fills them in and you
+       can correct anything it gets wrong.</p>
+    <textarea id="x-say" style="min-height:76px"
+      placeholder="I'm a VT student, I make about $2,400 a month, I need a 2 bedroom near campus and I have a car."></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="x-understand">Work it out from that</button>
+      <span id="x-say-status" class="sub" role="status" aria-live="polite"></span>
+    </div>
+    <div id="x-understood" class="note hidden" style="margin-top:12px"></div>
+  </div>
+
   <div class="grid">
     <div><label for="x-city">City or town</label>
       <input type="text" id="x-city" placeholder="Blacksburg"></div>
@@ -1235,6 +1250,62 @@ $("get-verdict").addEventListener("click", async () => {
     }
   }catch(e){ $("verdict-status").textContent = "Could not reach the server."; }
   $("get-verdict").disabled = false;
+});
+
+/* ---------- natural language into the form ----------
+   A door, not a different engine. Everything the model works out lands in
+   the visible fields so it can be seen and corrected. Nothing is computed
+   from it until the person presses the normal button. */
+const X_FIELDS = {
+  city:"x-city", state:"x-state", zip:"x-zip", bedrooms:"x-bedrooms",
+  baths:"x-baths", income:"x-income", roommates:"x-roommates",
+  destination:"x-destination", commute_mode:"x-commute-mode", max_rent:"x-max"
+};
+
+$("x-understand").addEventListener("click", async () => {
+  const text = $("x-say").value.trim();
+  if(!text){ $("x-say-status").textContent = "Say something first."; return; }
+  $("x-understand").disabled = true;
+  $("x-say-status").textContent = "Reading that";
+  try{
+    const r = await fetch("/api/intent",{method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({text})});
+    const d = await r.json();
+    if(!r.ok || d.error){
+      $("x-say-status").textContent = d.error || "Could not read that. Use the fields below.";
+      $("x-understand").disabled = false; return;
+    }
+    const p = d.parsed || {};
+    let filled = 0;
+    Object.entries(X_FIELDS).forEach(([key, id]) => {
+      const el = $(id);
+      el.classList.remove("read");
+      if(p[key] !== null && p[key] !== undefined && p[key] !== ""){
+        el.value = p[key]; el.classList.add("read"); filled++;
+      }
+    });
+
+    show($("x-understood"));
+    const unclear = (p.unclear || []).filter(Boolean);
+    $("x-understood").innerHTML =
+      `<p><strong>Here is what I took from that.</strong></p>
+       <p class="sub">${p.understood || "Filled in what I could."}</p>` +
+      (unclear.length
+        ? `<p class="sub">I could not work out ${unclear.join(", ")}.
+           The fields below are highlighted where I did fill something in,
+           so check those and add the rest.</p>`
+        : `<p class="sub">The fields below are highlighted. Check them before
+           you search, because I can get this wrong.</p>`);
+    $("x-say-status").textContent = filled + " field" + (filled===1?"":"s") + " filled.";
+    $("x-city").focus();
+  }catch(e){
+    $("x-say-status").textContent = "Could not reach the server. Use the fields below.";
+  }
+  $("x-understand").disabled = false;
+});
+
+$("x-say").addEventListener("keydown", e => {
+  if(e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("x-understand").click();
 });
 
 /* ---------- explore ---------- */

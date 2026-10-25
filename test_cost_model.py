@@ -416,6 +416,57 @@ class TestAffordability(unittest.TestCase):
         self.assertAlmostEqual(a["rent_only"] - b["rent_only"], 150, places=2)
 
 
+class TestIntentNormalisation(unittest.TestCase):
+    """Turning what someone typed into parameters. The expensive mistake is
+    a yearly salary read as a monthly one, so most of this guards that."""
+
+    def test_a_monthly_figure_passes_through(self):
+        self.assertEqual(main.normalise_intent({"income": 2400})["income"], 2400)
+
+    def test_a_yearly_figure_is_converted(self):
+        self.assertEqual(main.normalise_intent({"income": 60000})["income"], 5000)
+
+    def test_an_impossible_figure_is_dropped_and_declared(self):
+        out = main.normalise_intent({"income": 9000000})
+        self.assertIsNone(out["income"])
+        self.assertIn("your income", out["unclear"])
+
+    def test_a_negative_income_is_dropped(self):
+        self.assertIsNone(main.normalise_intent({"income": -500})["income"])
+
+    def test_text_where_a_number_should_be_is_dropped(self):
+        self.assertIsNone(main.normalise_intent({"income": "not sure"})["income"])
+
+    def test_bedrooms_are_clamped(self):
+        self.assertEqual(main.normalise_intent({"bedrooms": 40})["bedrooms"], 6)
+        self.assertEqual(main.normalise_intent({"bedrooms": -2})["bedrooms"], 0)
+
+    def test_roommates_cannot_be_zero(self):
+        self.assertEqual(main.normalise_intent({"roommates": 0})["roommates"], 1)
+
+    def test_a_state_that_does_not_exist_is_dropped(self):
+        self.assertIsNone(main.normalise_intent({"state": "ZZ"})["state"])
+        self.assertEqual(main.normalise_intent({"state": "va"})["state"], "VA")
+
+    def test_an_invented_commute_mode_is_dropped(self):
+        self.assertIsNone(main.normalise_intent({"commute_mode": "teleport"})["commute_mode"])
+        self.assertEqual(main.normalise_intent({"commute_mode": "Drive"})["commute_mode"], "drive")
+
+    def test_a_malformed_zip_is_dropped(self):
+        self.assertEqual(main.normalise_intent({"zip": "24060"})["zip"], "24060")
+        self.assertIsNone(main.normalise_intent({"zip": "240"})["zip"])
+
+    def test_nulls_stay_null_rather_than_becoming_zero(self):
+        out = main.normalise_intent({"income": None, "bedrooms": None,
+                                     "state": None, "zip": None})
+        for k in ("income", "bedrooms", "state", "zip"):
+            self.assertIsNone(out[k])
+
+    def test_an_empty_answer_is_handled(self):
+        self.assertEqual(main.normalise_intent({}), {})
+        self.assertEqual(main.normalise_intent(None), {})
+
+
 class TestNothingIsInvented(unittest.TestCase):
     """The model is never allowed to produce a figure. These check that the
     analysis is a pure function of its inputs and nothing else."""

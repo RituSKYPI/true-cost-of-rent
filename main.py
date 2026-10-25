@@ -1324,6 +1324,131 @@ def api_sharpen():
     return jsonify(what_would_sharpen(b.get("parsed"), b.get("form")))
 
 
+INTENT_PROMPT = """Someone described their housing situation in their own
+words. Turn it into search parameters. Return strict JSON, nothing else:
+
+{"city": "string or null",
+ "state": "two letter US state code or null",
+ "zip": "5 digits or null",
+ "bedrooms": number or null,
+ "baths": number or null,
+ "income": number or null,
+ "roommates": number or null,
+ "destination": "where they need to travel to, as an address or place name, or null",
+ "commute_mode": "drive, transit, bike, walk, or null",
+ "max_rent": number or null,
+ "understood": "one short sentence saying what you took from this, in plain
+                language, so they can tell if you got it wrong",
+ "unclear": ["things you could not work out and had to leave blank"]}
+
+Rules you must follow:
+- Only fill a field if they actually said it or it follows directly. Never
+  guess a city from a university name you are unsure about.
+- income is MONTHLY and after tax. If they give a yearly figure, divide by
+  12. If they say an hourly wage and their hours, work it out. If they say
+  "I make 60k", that is yearly, so monthly is 5000. Show your result only,
+  not the working.
+- roommates is the TOTAL number of people splitting the rent, including
+  them. "me and two friends" is 3. "living alone" is 1.
+- bedrooms: "studio" is 0. If they say how many people and not how many
+  bedrooms, leave bedrooms null rather than assuming.
+- commute_mode: only set it if they say how they travel. "I have a car"
+  means drive. "I don't have a car" means transit, unless they say
+  otherwise.
+- destination is where they need to get to regularly, usually work or
+  campus. Only fill it if they named somewhere.
+- If they mention a well known university, you may put its name in
+  destination, but only put a city in `city` if they named the city or the
+  university's city is unambiguous to you.
+- unclear should name anything a person would need to fill in themselves.
+  Be honest here. It is better to say you did not catch the income than to
+  invent one.
+
+WHAT THEY SAID:
+"""
+
+
+def normalise_intent(data):
+    """Keep what the model returned inside bounds a human could mean.
+
+    The expensive mistake here is an annual salary read as a monthly one.
+    "I make 60k" becoming 60,000 a month would hand someone an 18,000 dollar
+    rent ceiling and the app would say every place in the country is
+    affordable. So anything above a plausible monthly wage is treated as
+    annual, and anything above plausible full stop is dropped and declared
+    rather than guessed at.
+    """
+    data = dict(data or {})
+
+    inc = data.get("income")
+    if inc is not None:
+        try:
+            inc = float(inc)
+        except Exception:
+            inc = None
+        if inc is None or inc <= 0 or inc > 500000:
+            data["income"] = None
+            data.setdefault("unclear", []).append("your income")
+        elif inc > 25000:
+            data["income"] = round(inc / 12)      # that was a yearly figure
+        else:
+            data["income"] = round(inc)
+
+    for key, lo, hi in (("bedrooms", 0, 6), ("roommates", 1, 8),
+                        ("baths", 1, 5), ("max_rent", 0, 20000)):
+        if data.get(key) is not None:
+            try:
+                data[key] = max(lo, min(int(float(data[key])), hi))
+            except Exception:
+                data[key] = None
+
+    if data.get("state"):
+        st = str(data["state"]).upper().strip()[:2]
+        data["state"] = st if st in CENTS_PER_KWH else None
+
+    if data.get("commute_mode"):
+        mode = str(data["commute_mode"]).lower().strip()
+        data["commute_mode"] = mode if mode in MODE_MAP else None
+
+    if data.get("zip"):
+        z = re.sub(r"\D", "", str(data["zip"]))[:5]
+        data["zip"] = z if len(z) == 5 else None
+
+    return data
+
+
+@app.route("/api/intent", methods=["POST"])
+def api_intent():
+    """Natural language in, the same parameters the form takes out.
+
+    This is a door, not a different engine. Everything it produces lands in
+    the visible form fields so the person can see what was understood and
+    correct it before anything is computed. The model translates and then
+    gets out of the way; the answer still comes from HUD, Places and the
+    arithmetic.
+    """
+    text = ((request.json or {}).get("text") or "").strip()
+    if not text:
+        return jsonify(error="Describe your situation first."), 400
+    if client is None:
+        return jsonify(error="Model not configured. Use the fields below."), 503
+
+    key = _cache_key("intent:" + text.lower(), [])
+    cached = cache_get(key)
+    if cached is not None:
+        return jsonify(parsed=cached, cached=True)
+    try:
+        resp = client.models.generate_content(
+            model=MODEL_NAME, contents=INTENT_PROMPT + text[:2000])
+        data = _json_from_model(resp.text)
+
+        data = normalise_intent(data)
+        cache_put(key, data)
+        return jsonify(parsed=data, cached=False)
+    except Exception as e:
+        return jsonify(error=str(e)[:200]), 500
+
+
 SHORTLIST_PROMPT = """Someone is choosing between places to live. Below are
 their options with figures that have ALREADY been computed and are final.
 
