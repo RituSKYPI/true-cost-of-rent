@@ -24,7 +24,15 @@ Built for GDG Build with AI x Hacktoberfest at Virginia Tech, 24 to 25 October
 - [Who this is for](#who-this-is-for)
   - [What five students said](#what-five-students-said)
 - [What it does](#what-it-does)
+  - [Explore an area, step by step](#explore-an-area-step-by-step)
+  - [The chat assistant](#the-chat-assistant)
 - [Architecture](#architecture)
+  - [System overview](#system-overview)
+  - [Request flow, checking a place](#request-flow-checking-a-place)
+  - [Request flow, the chat assistant](#request-flow-the-chat-assistant)
+  - [Component map](#component-map)
+  - [What leaves the browser](#what-leaves-the-browser)
+  - [Deployment](#deployment)
 - [How the AI is used, and what it never does](#how-the-ai-is-used-and-what-it-never-does)
 - [When the model got it wrong](#when-the-model-got-it-wrong)
 - [Grounding and safety](#grounding-and-safety)
@@ -41,8 +49,11 @@ Built for GDG Build with AI x Hacktoberfest at Virginia Tech, 24 to 25 October
 
 ## The problem
 
-Over 46 percent of US renters spend more than 30 percent of their income on
-housing, and 23 percent spend more than half. People choose between places
+Roughly half of US renters, 22.7 million households or 49 percent in 2024,
+spend more than 30 percent of their income on rent and utilities, a record
+number, and about 12.1 million of those households spend more than half
+(Harvard Joint Center for Housing Studies, America's Rental Housing 2026).
+People choose between places
 using the number on the listing, and the number on the listing is not the
 number that leaves their account. Utilities, parking, valet trash, water
 billed back by formula, admin fees, amenity fees and the cost of the commute
@@ -334,47 +345,287 @@ actually there. It does not put a price on a specific building, because no
 public source publishes rent per building and inventing one would be worse
 than useless.
 
-**Chat.** A Gemini assistant with the computed state of your screen in its
-context. It is not a general chat window. It can fill in fields for you, run
-the analysis, switch tabs and explain any figure on the page, and it is told
-that the arithmetic is already done and correct so it never recomputes
-anything. It can only write to a fixed list of field names, every value it
-returns is validated against type and range before it touches a form, and the
-server overrules it where a field would produce a wrong answer.
+**Chat.** A Gemini assistant that fills in the tool for you and
+answers questions about the figures on your screen. It never does
+arithmetic. Full detail is in [The chat assistant](#the-chat-assistant).
+
+### Explore an area, step by step
+
+1. **Say it or fill it in.** Describe your situation in plain English and
+   `api_intent` turns it into search fields, or type the boxes yourself. The
+   interface prints what it understood so you can catch a wrong reading, and
+   lists what it could not work out.
+2. **Find the county.** HUD publishes rents by county, not by town. A ZIP code
+   resolves directly through HUD's crosswalk. A town name is matched against
+   HUD's county names for the state.
+3. **Get the typical rent.** The HUD Fair Market Rent for that county, by
+   bedroom count. This is a 40th percentile **gross** rent, which means it
+   already has utilities inside it.
+4. **Work out your line.** Two ceilings, because two different things are
+   compared against them. 30 percent of income is held against HUD's gross
+   figure. The same 30 percent with utilities, commute, parking and insurance
+   taken off first is held against a listing's advertised rent, because a
+   listing price has none of those in it. Mixing the two up tells people they
+   cannot afford somewhere they can.
+5. **Show what is actually there.** The Places API returns real buildings with
+   names, addresses and ratings. No rent is attached, because no public source
+   publishes rent per building, so the interface sends you to Check a place for
+   the real number.
+
+### The chat assistant
+
+A Gemini assistant for people who do not know what to type. It is not a general
+chat window. It exists to do two things, answer questions about the figures on
+the screen and fill in the tool for you.
+
+**What it can do**
+
+- Fill in fields from what you say. "I make 60k and want a two bedroom in
+  Blacksburg" sets income to 5,000 a month and the bedrooms and city.
+- Run the analysis or the area search for you, once rent and income exist.
+- Switch to the other tab when your question lives there.
+- Explain any figure on the page in plain words.
+- Ask for the one missing thing that matters most, rather than five at once.
+
+**What it is told**
+
+Every request carries a snapshot the server builds, called CURRENT STATE. It
+holds the computed result, the shortlist, which fields are filled and which are
+blank, which tab you are on, and whether the listing is priced per bed. The
+system instruction says those figures are final and correct, that it must never
+do arithmetic or state a dollar figure that is not already in the state, never
+invent a value you did not give it, never give legal advice, never tell you
+whether to take a place, and say plainly that it is out of scope for anything
+that is not housing or this tool.
+
+**What it returns**
+
+Strict JSON, enforced by a JSON response MIME type on the request:
+
+```json
+{"reply": "short answer",
+ "set_fields": {"income": 3950, "bedrooms": 1},
+ "run": "analyse",
+ "switch_tab": null}
+```
+
+**What stands between that and your screen**
+
+1. `set_fields` may only name fields from a fixed list. Anything else is dropped.
+2. Each value is checked for type and range. Rent must be between 0 and 50,000.
+   Roommates between 1 and 8. State and commute mode must come from fixed
+   vocabularies.
+3. On a listing priced per bed, the server removes any change to the roommate
+   count, whatever the model asked for, and replaces the reply with the correct
+   explanation. This exists because the model changed the roommate count on
+   such a listing, which doubled the rent share and raised the burden from 20 to
+   39 percent. A rule in the prompt did not hold, so the rule is in code.
+4. The reply is length limited by the instruction and the output ceiling, and a
+   malformed response is salvaged down to its sentence rather than shown as raw
+   JSON.
+5. Values land in boxes you can see and edit, labelled "Filled in from what you
+   said". Nothing is computed from them until the normal button runs. When the
+   assistant asks to run an analysis it clicks that same button.
+
+The conversation window is the last twelve messages, each capped at 1,500
+characters. Messages and the figures on screen, which include income and
+addresses, are sent to Gemini to answer you. They are not stored.
 
 ---
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    B["Browser<br/>static page, no framework<br/>income and shortlist stay here"]
-    CR["Cloud Run<br/>Flask + gunicorn<br/>ALL arithmetic happens here"]
-    V["Vertex AI<br/>Gemini 3.8 Flash<br/>multimodal + URL context"]
-    F["Firestore<br/>response cache + anonymous<br/>usage counts, both expiring"]
-    R["Routes API<br/>drive / transit / bike / walk"]
-    P["Places API<br/>real buildings by area"]
-    H["HUD Fair Market Rents API<br/>typical rent by county"]
-    E["EIA 2024 electricity prices<br/>bundled in code, by state"]
+### The rule everything else follows
 
-    B -->|"screenshots, link, notes,<br/>form values, chat"| CR
-    CR -->|"read the listing, classify it,<br/>write the explanation"| V
-    CR --> F
-    CR --> R
-    CR --> P
-    CR --> H
-    CR --- E
+**Language in, arithmetic out.** Gemini turns messy human material, screenshots
+and pasted text and plain English, into structured fields, and turns finished
+numbers into plain sentences. Python does every calculation in between. The
+model's output is treated as untrusted input at every boundary, so it is
+validated before it reaches a form field or a formula, and the arithmetic
+never depends on the model being available or right.
+
+### System overview
+
+```mermaid
+flowchart TB
+    subgraph Client["Browser, one static page, no framework"]
+        UI["Check a place, Explore an area, Chat<br/>provenance labels, HTML escaping"]
+        LS["Shortlist in localStorage"]
+    end
+
+    subgraph Run["Cloud Run service, Flask on gunicorn"]
+        API["Ten routes<br/>parse, analyze, commute, explore,<br/>sharpen, shortlist, intent, chat"]
+        GUARD["Validation layer<br/>money_in, count_in, clean_chat_fields,<br/>normalise_intent, per bed guard"]
+        CALC["analyze and helpers<br/>pure Python, no I/O<br/>ALL arithmetic"]
+    end
+
+    subgraph GCP["Google Cloud"]
+        VX["Vertex AI, Gemini 3.8 Flash<br/>multimodal input, URL context tool,<br/>system instruction, JSON response type"]
+        FS["Firestore<br/>parse_cache, 30 day TTL<br/>usage, 90 day TTL"]
+        RT["Routes API"]
+        PL["Places API"]
+    end
+
+    subgraph Public["Public data"]
+        EIA["EIA 2024 electricity prices<br/>bundled in the code"]
+        HUD["HUD Fair Market Rents API"]
+    end
+
+    UI <--> API
+    UI --- LS
+    API <--> VX
+    VX -. "untrusted output" .-> GUARD
+    GUARD --> CALC
+    CALC --- EIA
+    API <--> FS
+    API --> RT
+    API --> PL
+    API --> HUD
 ```
+
+The dotted edge is the one that matters. Nothing the model produces reaches the
+calculator without passing through the validation layer first.
+
+### Request flow, checking a place
+
+This is the full path of one listing from screenshot to answer.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant C as Cloud Run
+    participant F as Firestore
+    participant G as Gemini on Vertex AI
+    participant R as Routes API
+
+    B->>C: POST /api/parse with screenshots, link, notes
+    C->>F: look up hash of input, model name and prompt
+    alt cache hit
+        F-->>C: parsed listing, no model call
+    else cache miss
+        C->>G: images as bytes, URL context tool, prompt
+        G-->>C: JSON listing, null wherever unstated
+        C->>C: validate, merge sources, detect per bed pricing
+        C->>F: save parsed fields with expires_at
+    end
+    C-->>B: fields, each with a provenance label
+
+    B->>C: POST /api/commute with two addresses
+    C->>R: computeRoutes for drive, transit, bike, walk
+    R-->>C: duration and distance only
+    C-->>B: four options with monthly cost and hours
+
+    B->>C: POST /api/analyze with the numbers
+    C->>C: analyze, pure Python
+    C->>G: the finished result, write two sentences
+    G-->>C: explanation
+    C->>F: usage record, burden band only, with expires_at
+    C-->>B: breakdown, flags, questions to ask, explanation
+```
+
+Notice what the model touches and what it does not. It reads the listing and it
+writes two sentences about a result that already exists. The step in the middle
+that produces the number involves no model and no network call.
+
+### Request flow, the chat assistant
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant C as Cloud Run
+    participant G as Gemini on Vertex AI
+
+    B->>C: POST /api/chat with last 12 messages and the screen state
+    C->>C: build CURRENT STATE from computed results, shortlist,<br/>filled and blank fields, per bed flag
+    C->>G: system instruction plus history, JSON response type
+    G-->>C: reply, set_fields, run, switch_tab
+    C->>C: clean_chat_fields, allow list, type and range checks
+    C->>C: per bed guard strips roommates if the listing is priced per bed
+    C-->>B: reply and only the validated fields
+    B->>B: show the reply, fill the boxes, label them
+    opt the model asked to run
+        B->>B: click the normal button
+        B->>C: POST /api/analyze or /api/explore
+    end
+```
+
+When the chat asks for a calculation it does not do one. It clicks the same
+button a person would, so the number comes from the same function through the
+same validation.
+
+### Component map
+
+| Component | What it does | Google service or feature |
+|---|---|---|
+| `static/index.html` | The whole interface. Provenance labels, escaping of all untrusted text, the shortlist, the chat client | none, runs in the browser |
+| `parse_listing`, `parse_listing_from_url` | Reads screenshots, a link and notes into one structured listing | Vertex AI multimodal input (`Part.from_bytes`), **URL context tool**, retrieval metadata checked to confirm the page was really fetched |
+| `analyze` | Every figure the user sees. Rent split, utilities, commute, concessions, burden, projection, ceilings | none, by design |
+| `utilities_for`, `feature_adjustment`, `ambiguity_cost` | EIA price times assumed consumption, photo multipliers capped between 0.75 and 1.6, pricing of "heating but not which kind" | none |
+| `unaddressed_fees`, `what_would_sharpen` | Which of thirteen routine charges the listing skipped, and which missing input would move the total most | none |
+| `commute_options` | Real travel time and distance for four modes | **Routes API** `computeRoutes`, with a field mask asking for duration and distance only |
+| `api_explore` | Resolves the place to a county, gets HUD rents, computes two affordability ceilings, finds real buildings | **Places API** `searchText` with a field mask, HUD API |
+| `api_intent` | Plain English to search parameters | Gemini |
+| `explain`, `api_shortlist` | Prose written from figures that already exist | Gemini |
+| `api_chat` | The assistant | Gemini with a **system instruction** and a **JSON response MIME type** |
+| `cache_get`, `cache_put`, usage write | Response cache and anonymous counts, both expiring | **Firestore** with TTL policies on `expires_at` |
+| `money_in`, `count_in`, `clean_chat_fields`, `normalise_intent` | The validation layer between the model and the arithmetic | none |
+
+### Where the model is allowed, and what stands behind it
+
+| Call | Model returns | What checks it | What still works without it |
+|---|---|---|---|
+| Read a listing | Structured fields, null where unstated | Type, range and vocabulary checks, blanks labelled in the UI | Enter the listing by hand |
+| Explain a result | Two or three sentences | It is handed only finished figures | A plain language fallback is built in |
+| Compare shortlist | A written comparison | Ranking table is computed separately, in the browser | The table and the ranking |
+| Parse a plain English search | Search parameters | `normalise_intent` | Fill the boxes by hand |
+| Chat | A reply and a set of fields | Fixed field allow list, numeric ranges, state and mode vocabularies, per bed guard | The entire rest of the app |
+
+### What leaves the browser
+
+| Data | Goes to | Stored |
+|---|---|---|
+| Screenshots, link, notes | Cloud Run, then Gemini | Images are not stored. The parsed fields are cached under a hash for **30 days** |
+| Income, rent, fees, roommates | Cloud Run, which does the arithmetic. The finished result goes to Gemini for the explanation | **No** |
+| Listing and destination addresses | Cloud Run, then the Routes API | **No** |
+| Chat messages and the figures on screen | Cloud Run, then Gemini | **No** |
+| One usage record per analysis, the burden band and whether the model ran | Firestore | **90 days** |
+| The shortlist | Stays in `localStorage`, sent to the server only when a written comparison is requested | **No** |
+
+### Deployment
+
+A source deploy. `gcloud run deploy --source .` uploads the folder, Cloud Build
+builds the container, Artifact Registry holds it, and Cloud Run serves the new
+revision and moves all traffic to it. Cloud Run scales to zero, so an idle
+deployment costs nothing.
+
+The service runs as its default compute service account and reaches Vertex AI
+and Firestore through Application Default Credentials. **No Google API key is
+used for the model.** The only keys are the Maps key, restricted to the Routes
+and Places APIs, and the HUD token, and both are environment variables.
+
+The `Procfile` runs one gunicorn worker with eight threads and a 180 second
+timeout. The timeout is not a tuning preference. Multimodal calls take longer
+than gunicorn's 30 second default, and with the default a screenshot read dies
+silently with nothing in the logs to say why.
+
+### Degrading gracefully
+
+| If this is missing | What happens |
+|---|---|
+| No Maps key | Commute and place search say they are unavailable. Everything else works |
+| No HUD token | The area rent benchmark says it is unavailable. The affordability line still computes from income |
+| The model is unavailable | Reading and explaining are off, and the arithmetic still works from hand entered figures. The chat returns a clear error |
+| A listing site refuses the link | The interface says the link did not work and asks for a screenshot |
 
 ### Google Cloud services used
 
 | Service | What it does here |
 |---|---|
-| **Cloud Run** | Hosts the backend and serves the page. Source deploys, scales to zero. |
-| **Firestore** | Caches model responses, records anonymous usage counts, expires both by TTL policy. |
-| **Vertex AI** | Runs Gemini 3.8 Flash for multimodal reading, URL context fetching, classification and prose. Authenticates by service account, no API key. |
-| **Routes API** | Real travel time and distance between the listing and where you need to be. |
-| **Places API** | Real apartment complexes for an area. |
+| **Cloud Run** | Hosts the backend and serves the page. Source deploys, scales to zero |
+| **Vertex AI** | Gemini 3.8 Flash for multimodal reading, URL context fetching, classification, prose and the chat. Service account auth |
+| **Firestore** | Response cache and anonymous usage counts, both expiring by TTL policy |
+| **Routes API** | Real travel time and distance |
+| **Places API** | Real apartment complexes for an area |
 
 Five services. The track requires two.
 
@@ -385,9 +636,9 @@ Five services. The track requires two.
 | `GET /` | The page |
 | `GET /healthz` | Model status, cache hits and misses, retention settings |
 | `POST /api/parse` | Read a listing from screenshots, a link, free text, or all three |
-| `POST /api/analyze` | The arithmetic. Pure function, no model, no I/O |
+| `POST /api/analyze` | The arithmetic. Pure function, then one model call for the explanation |
 | `POST /api/commute` | Routes API lookup across four modes |
-| `POST /api/explore` | HUD benchmark, affordability ceiling, real places |
+| `POST /api/explore` | HUD benchmark, affordability ceilings, real places |
 | `POST /api/sharpen` | Rank the missing inputs by dollar impact |
 | `POST /api/shortlist` | Written comparison of saved places |
 | `POST /api/intent` | Plain English description to search parameters |
@@ -457,8 +708,10 @@ out. The app now carries two separate ceilings and labels which is which.
 - All arithmetic in code, covered by 96 tests that need no credentials.
 - The model is instructed to return null for anything not stated, and blank
   fields are visibly blank and labelled rather than silently zero.
-- Structured output is enforced at the API, so the model returns JSON because
-  the request demands it rather than because the prompt asks politely.
+- The chat endpoint enforces JSON at the API with a JSON response MIME type.
+  Listing extraction asks for JSON in the prompt and is read by a tolerant
+  parser, and every field that comes out is validated against a type, a range
+  and a fixed vocabulary before it reaches a form or a calculation.
 - Extraction uses controlled vocabularies. The photo feature list, the fee
   catalogue keys and the chat's writable field names are all fixed sets, and
   anything outside them is discarded.
@@ -493,10 +746,14 @@ treated as one.
 
 ## Privacy and data retention
 
-Income, rent figures and the shortlist stay in the browser and are never sent
-to the server. Per analysis the server writes one record: which of three
-burden bands the result fell into, and whether the model was used. No rent, no
-income, no address, no identifier.
+The shortlist stays in the browser. Income and rent figures are sent to the
+server because the arithmetic runs there, and they are not stored. Per analysis
+the server writes one record: which of three burden bands the result fell into,
+and whether the model was used. No rent, no income, no address, no identifier.
+
+If you use the chat, the figures and addresses currently on your screen,
+including income, are sent to Gemini as context so it can answer you. They are
+not stored. The chat is optional and nothing else depends on it.
 
 Screenshots go to the Gemini API to be read, and a hash keyed copy is cached.
 Commute addresses go to the Routes API. Neither is tied to a person.
@@ -696,6 +953,10 @@ Stated plainly, because a tool about hidden costs should not hide its own.
   predict a specific landlord's increase and the app does not pretend to.
 - **The area search cannot price a specific building,** because no public
   source publishes that.
+- **A town name only resolves to a HUD county when the town appears in the
+  county name.** Charlotte sits in Mecklenburg County and Blacksburg in
+  Montgomery County, so for those the app asks for a ZIP code. With a ZIP the
+  lookup is direct.
 - **The trial log is ten listings, not a study.** Nine of them were priced
   from public aggregator pages rather than read end to end, and the method is
   stated in the log so the number can be judged on what it is.

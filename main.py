@@ -1634,7 +1634,9 @@ def api_chat():
     if client is None:
         return jsonify(error="Not available right now."), 503
 
-    # Only the computed shape of things. No income, no address.
+    # The computed results, plus the fields currently on screen so it can
+    # answer about them. That includes income and addresses. Nothing here
+    # is stored, and the privacy text says so.
     safe = {}
     r = state.get("result") or {}
     if r:

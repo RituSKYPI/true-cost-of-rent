@@ -318,7 +318,8 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
   </div>
   <div id="verdict" class="note hidden"></div>
   <p class="tiny" style="margin:14px 0 0">
-    Kept in this browser. Your shortlist and your income never reach the server.
+    Kept in this browser. The shortlist is only sent to the server when you ask
+    for a written comparison, and it is not stored.
   </p>
 </section>
 
@@ -379,8 +380,8 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
     <div style="flex:1">
       <h2 id="h-inputs" style="margin:0 0 6px">Check the numbers</h2>
       <p class="lede">Anything the listing did not state is left blank, so a
-         figure you see is a figure somebody supplied. Your income stays in
-         this browser.</p>
+         figure you see is a figure somebody supplied. Your income is used to
+         do the sums and is not stored.</p>
     </div>
   </div>
 
@@ -704,11 +705,13 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
 
   <h2 style="font-size:.9375rem;color:var(--muted);margin:22px 0 6px">
     What this collects</h2>
-  <p>Your income, your rent figures and your shortlist stay in your browser.
-     They are never sent to the server and never stored. When you analyse a
-     place the server records one line: which of three bands the result fell
-     into, and whether the model was used. No rent, no income, no address, no
-     identifier, nothing that could be traced back to you.</p>
+  <p>Your shortlist stays in your browser. Your income and rent figures are
+     sent to the server so it can do the arithmetic, and they are not stored.
+     When you analyse a place the server records one line: which of three bands
+     the result fell into, and whether the model was used. No rent, no income,
+     no address, no identifier, nothing that could be traced back to you.</p>
+  <p>If you use the chat, the figures and addresses on your screen are sent
+     to Gemini so it can answer you. They are not stored.</p>
   <p>Screenshots you upload are sent to Google's Gemini API to be read, and a
      copy is cached so the same screenshot is not read twice. Addresses you
      type into the commute box go to the Google Maps Routes API. Neither is
