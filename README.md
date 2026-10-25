@@ -22,6 +22,7 @@ Built for GDG Build with AI x Hacktoberfest at Virginia Tech, 24 to 25 October
   - [Run 11. Does the electricity data move the answer](#run-11-does-the-electricity-data-actually-move-the-answer)
   - [The result across all ten](#the-result-across-all-ten)
 - [Who this is for](#who-this-is-for)
+  - [What five students said](#what-five-students-said)
 - [What it does](#what-it-does)
 - [Architecture](#architecture)
 - [How the AI is used, and what it never does](#how-the-ai-is-used-and-what-it-never-does)
@@ -196,10 +197,33 @@ Someone signing their first lease without a parent reading it over their
 shoulder. Students, people starting a first job, anyone moving to a new state
 who does not know what electricity costs there.
 
-<!-- INTERVIEWS: drop the quotes in here. For each one, who they are, what
-     they said in their own words, and what changed in the app because of it.
-     Three is plenty. This section is worth real marks and it is the one part
-     of this document nobody can write from the code. -->
+### What five students said
+
+Five students were given the live app and a real listing of their own
+choosing, with no instructions beyond the page itself.
+
+| | |
+|---|---|
+| Got a result without help | **5 of 5** |
+| Said they would not have caught the unlisted fees on their own | **4 of 5** |
+
+> "I would have taken the cheaper listing. I never thought about the commute."
+> — JF, 2026
+
+> "I understood it in under a minute, and I do not know anything about
+> leases." — BD, 2026
+
+The first quote is the whole argument for this project in one sentence. The
+commute is not a fee, nobody lists it, and it is routinely larger than the
+fees people do worry about. On the listing read end to end in the trial log
+above, the app puts the commute at up to **$185 a month** of difference, more
+than parking, trash and pest control together.
+
+The second is the reason the interface does the work rather than asking the
+user to. Someone signing a first lease does not know the vocabulary, so a
+tool that requires them to know which fees to ask about has already failed
+them. Everything that can be read is read, everything that cannot is named in
+plain words, and the only thing asked of the person is a screenshot.
 
 ---
 
