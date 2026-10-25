@@ -109,6 +109,54 @@ FEATURE_EFFECT = {
 }
 
 
+# Listings routinely name a category without naming the type. "Heating" and
+# "Air Conditioning" tell you nothing about the bill, because the bill
+# depends entirely on which kind. The honest response is neither to guess nor
+# to ignore it, but to price the uncertainty and tell the person to ask.
+AMBIGUOUS_FEATURES = {
+    "heating_type_unknown": {
+        "label": "What kind of heating it has",
+        "why": "The listing says heating but not which kind. Electric "
+               "baseboard costs far more to run than gas or a heat pump, and "
+               "this is the biggest single swing in the whole estimate.",
+        "how": "Ask whether it is gas, a heat pump, or electric baseboard. "
+               "Baseboard heaters are long low metal panels along the wall.",
+        "cheapest": "gas_heat",
+        "dearest": "electric_baseboard_heat",
+    },
+    "cooling_type_unknown": {
+        "label": "What kind of air conditioning it has",
+        "why": "A window unit costs more to run than a properly sized "
+               "central system, and the listing does not say which this is.",
+        "how": "Ask, or look for a boxy unit in a window in the photos.",
+        "cheapest": "central_air",
+        "dearest": "window_ac",
+    },
+    "laundry_type_unknown": {
+        "label": "Whether the washer and dryer are in your unit",
+        "why": "A shared laundry room costs per load instead of showing up "
+               "on your power bill.",
+        "how": "Ask whether it is in the apartment or in a shared room.",
+        "cheapest": "no_laundry",
+        "dearest": "in_unit_laundry",
+    },
+}
+
+
+def ambiguity_cost(kind, bedrooms, state):
+    """What not knowing is worth, per month, in dollars."""
+    spec = AMBIGUOUS_FEATURES.get(kind)
+    if not spec:
+        return None
+    b = min(max(int(bedrooms or 1), 0), 4)
+    kwh = KWH_BY_BEDROOMS[b]
+    cents = CENTS_PER_KWH.get((state or "").upper()[:2], US_AVG_CENTS)
+    base = kwh * cents / 100.0
+    lo = FEATURE_EFFECT[spec["cheapest"]][0]
+    hi = FEATURE_EFFECT[spec["dearest"]][0]
+    return round(base * (hi - lo), 2)
+
+
 def feature_adjustment(features):
     """Combined multiplier on electricity use, plus why. Capped so a long
     feature list cannot run away with the estimate."""
@@ -550,6 +598,8 @@ explicitly stated. Return strict JSON with these keys and nothing else:
                            on, such as a parking section with no price"],
  "unit_features": ["ids from the feature list below that you can SEE in the
                    photos or that the listing states in words"],
+ "ambiguous_features": ["ids from the ambiguous list below, for things the
+                         listing NAMES but does not specify the type of"],
  "red_flags": [{"phrase": "the wording from the listing, under 12 words",
                 "means": "what it actually means for the renter, one line"}],
  "notes": "short string naming anything that was NOT stated"}
@@ -565,6 +615,20 @@ Rules for unit_features:
   windows have thin aluminium or wooden frames and often a single pane.
 - Never infer a feature from the building's age, the rent, or the area.
 - If you cannot tell, leave it out. An empty list is a correct answer.
+
+The ambiguous_feature ids you may use, and nothing else:
+heating_type_unknown, cooling_type_unknown, laundry_type_unknown
+
+Rules for ambiguous_features:
+- Use these when the listing names a category but not the type, which is very
+  common. An amenities list saying "Heating" with no further detail is
+  heating_type_unknown. "Air Conditioning" with no indication of central or
+  window is cooling_type_unknown. "Washer/Dryer" or "Laundry Facilities"
+  without saying whether it is in the apartment is laundry_type_unknown.
+- If you already put the specific version in unit_features, do NOT also list
+  the ambiguous one. Seeing a window unit in a photo settles the question.
+- If the listing says nothing at all about a category, it goes in neither
+  list.
 
 Rules for red_flags:
 - Only quote wording that is actually in the listing. Keep each phrase short.
@@ -1150,6 +1214,21 @@ def what_would_sharpen(parsed, form=None):
             fee["low"] if monthly else 0,
             fee["high"] if monthly else round(fee["high"] / 12),
             "Ask for the figure in writing before you apply.")
+
+    # Named but unspecified. The listing told you a category and withheld
+    # the only part that affects the bill.
+    seen = set(p.get("unit_features") or [])
+    for kind in (p.get("ambiguous_features") or []):
+        spec = AMBIGUOUS_FEATURES.get(kind)
+        if not spec:
+            continue
+        if spec["cheapest"] in seen or spec["dearest"] in seen:
+            continue        # a photo already settled it
+        worth = ambiguity_cost(kind, beds, p.get("state") or f.get("state"))
+        if not worth or worth < 3:
+            continue
+        add("ambiguous:" + kind, spec["label"], spec["why"], 0, worth,
+            spec["how"])
 
     # Photos. Only worth suggesting if they gave us none of the unit.
     if not (p.get("unit_features") or []):

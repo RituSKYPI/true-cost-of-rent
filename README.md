@@ -175,7 +175,7 @@ Screenshots go to the Gemini API to be read and a hash keyed copy is cached.
 Commute addresses go to the Routes API. Neither is tied to a person.
 
 ## Accessibility
-**Lighthouse accessibility score: 100.**
+
 Keyboard reachable throughout with a skip link and visible focus. Burden state
 is carried in words as well as colour. Tables have scope and captions, live
 regions announce status changes, and the layout works down to phone width.

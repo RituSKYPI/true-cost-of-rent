@@ -318,6 +318,50 @@ class TestWhatWouldSharpen(unittest.TestCase):
         self.assertLessEqual(len(out["items"]), 6)
 
 
+class TestAmbiguousFeatures(unittest.TestCase):
+    """A listing that says "Heating" has told you nothing about the bill.
+    The app prices the not knowing rather than guessing or ignoring it."""
+
+    def test_heating_is_the_biggest_unknown(self):
+        heat = main.ambiguity_cost("heating_type_unknown", 2, "VA")
+        cool = main.ambiguity_cost("cooling_type_unknown", 2, "VA")
+        laundry = main.ambiguity_cost("laundry_type_unknown", 2, "VA")
+        self.assertGreater(heat, cool)
+        self.assertGreater(cool, laundry)
+
+    def test_cost_of_not_knowing_scales_with_the_state_price(self):
+        cheap = main.ambiguity_cost("heating_type_unknown", 2, "WA")
+        dear = main.ambiguity_cost("heating_type_unknown", 2, "HI")
+        self.assertGreater(dear, cheap)
+
+    def test_unknown_kind_is_ignored(self):
+        self.assertIsNone(main.ambiguity_cost("colour_of_the_door", 2, "VA"))
+
+    def test_ambiguity_becomes_a_question(self):
+        out = main.what_would_sharpen(
+            {"rent": 1000, "bedrooms": 2, "state": "VA",
+             "utilities_stated": True, "unit_features": ["window_ac"],
+             "ambiguous_features": ["heating_type_unknown"]},
+            {"income": 3000, "rent": 1000, "state": "VA", "commute_miles": 2})
+        fields = [i["field"] for i in out["items"]]
+        self.assertIn("ambiguous:heating_type_unknown", fields)
+
+    def test_a_photo_that_settles_it_removes_the_question(self):
+        base = {"rent": 1000, "bedrooms": 2, "state": "VA",
+                "utilities_stated": True,
+                "ambiguous_features": ["cooling_type_unknown"]}
+        form = {"income": 3000, "rent": 1000, "state": "VA", "commute_miles": 2}
+
+        unresolved = main.what_would_sharpen(dict(base, unit_features=[]), form)
+        resolved = main.what_would_sharpen(
+            dict(base, unit_features=["window_ac"]), form)
+
+        self.assertIn("ambiguous:cooling_type_unknown",
+                      [i["field"] for i in unresolved["items"]])
+        self.assertNotIn("ambiguous:cooling_type_unknown",
+                         [i["field"] for i in resolved["items"]])
+
+
 class TestLevers(unittest.TestCase):
     def test_a_lever_never_costs_more_than_doing_nothing(self):
         for miles in (0.5, 2, 5, 15, 40):
