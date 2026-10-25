@@ -309,8 +309,9 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
   <div style="margin-top:18px">
     <label for="url">Or a link</label>
     <input type="text" id="url" placeholder="https://" inputmode="url">
-    <p class="tiny" style="margin:5px 0 0">Big listing sites block automated
-       readers. If that happens it will say so and ask for a screenshot.</p>
+    <p class="tiny" style="margin:5px 0 0">The model fetches the page itself,
+       which reaches sites that block us directly. It can return a cached
+       version though, so a screenshot is still more reliable.</p>
   </div>
 
   <details>
@@ -337,6 +338,7 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
     </div>
   </div>
 
+  <div id="cached-note" class="note warn hidden" style="margin-bottom:18px"></div>
   <div id="sharpen" class="note hidden" style="margin-bottom:18px"></div>
   <div id="bed-note" class="note warn hidden" style="margin-bottom:18px"></div>
 
@@ -769,7 +771,9 @@ function setField(id, val, label){
   if(val != null && val !== ""){
     el.value = val; el.classList.add("read");
     tag.className = "prov read";
-    tag.textContent = label || "Read from the listing";
+    tag.textContent = label ||
+      (lastParsed.from_url ? "Read from the link, may be cached"
+                           : "Read from the listing");
   }else{
     el.classList.add("missing");
     tag.className = "prov missing";
@@ -851,6 +855,18 @@ $("parse").addEventListener("click", async () => {
     un.textContent = p.utilities_stated ? "Read from the listing."
       : "The listing did not say. Assume you pay all of them unless you check.";
 
+    const cached = $("cached-note");
+    cached.classList.toggle("hidden", !d.from_url);
+    if(d.from_url){
+      cached.innerHTML =
+        `<p><strong>Read from the link, not a screenshot.</strong></p>
+         <p class="sub">The model fetched that page itself, which usually goes
+         through Google's index rather than the live site. Google says that
+         index can be out of date. Rent changes often, so check the figures
+         below against the page before you rely on them. A screenshot is
+         always more reliable.</p>`;
+    }
+
     refreshSharpen();
 
     $("parse-status").textContent =
@@ -914,6 +930,18 @@ async function refreshSharpen(){
 document.querySelectorAll(".util").forEach(c =>
   c.addEventListener("change", () => {
     lastParsed.utilities_stated = true;
+    const cached = $("cached-note");
+    cached.classList.toggle("hidden", !d.from_url);
+    if(d.from_url){
+      cached.innerHTML =
+        `<p><strong>Read from the link, not a screenshot.</strong></p>
+         <p class="sub">The model fetched that page itself, which usually goes
+         through Google's index rather than the live site. Google says that
+         index can be out of date. Rent changes often, so check the figures
+         below against the page before you rely on them. A screenshot is
+         always more reliable.</p>`;
+    }
+
     refreshSharpen();
   }));
 

@@ -751,6 +751,48 @@ def _json_from_model(raw):
     return json.loads(m.group(0) if m else raw)
 
 
+def parse_listing_from_url(url):
+    """Let the model fetch the page itself.
+
+    Our own fetch gets a 403 from the big listing sites. Google's URL context
+    tool goes through their index first and only falls back to a live fetch,
+    so it often gets content we cannot. The trade is freshness: Google's own
+    documentation warns the index may be stale, which for an article is fine
+    and for a rent figure is not. So anything that comes back this way is
+    flagged, and the UI says the price may be cached.
+    """
+    if client is None:
+        return None, "no_model"
+    try:
+        from google.genai import types
+
+        cfg = types.GenerateContentConfig(
+            tools=[types.Tool(url_context=types.UrlContext())])
+        resp = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[PARSE_PROMPT,
+                      "Read this rental listing and apply the rules above:\n" + url],
+            config=cfg)
+        data = _json_from_model(resp.text)
+
+        # Did it actually retrieve anything, or is it answering from thin air?
+        got = False
+        try:
+            meta = resp.candidates[0].url_context_metadata
+            for entry in (getattr(meta, "url_metadata", None) or []):
+                if "SUCCESS" in str(getattr(entry, "url_retrieval_status", "")):
+                    got = True
+        except Exception:
+            got = bool(data)          # no metadata to check, judge by result
+
+        if not got or not any(data.get(k) is not None
+                              for k in ("rent", "rent_min", "bedrooms")):
+            return None, "nothing_useful"
+        return data, None
+    except Exception as e:
+        return None, str(e)[:120]
+
+
 def parse_listing(text=None, images=None):
     """Model reads a listing from text, from one or more screenshots, or
     both. Several screenshots matter here: the price is at the top of a
@@ -1323,10 +1365,23 @@ def api_parse():
         images = [{"data": body["image"], "mime": body.get("mime", "image/png")}]
 
     note = None
+    if url and not images:
+        # Let the model fetch it first. It reaches pages we cannot.
+        data, err = parse_listing_from_url(url)
+        if data:
+            data["from_url"] = True
+            cache_put(_cache_key("url:" + url, []), data)
+            return jsonify(
+                parsed=data, source="model", from_url=True,
+                notes=((data.get("notes") or "") +
+                       " Read from the link rather than a screenshot, so the "
+                       "price may be a cached version. Check it against the "
+                       "live page.").strip())
+
     if url:
         fetched, err = fetch_listing(url)
         if fetched:
-            text = (text + "\n" + fetched).strip()
+            text = ((text or "") + "\n" + fetched).strip()
         else:
             note = err
             if not text and not images:
