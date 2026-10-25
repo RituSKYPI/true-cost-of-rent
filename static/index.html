@@ -91,6 +91,12 @@ input[type=text],input[type=number],select,textarea{
 }
 input:hover,select:hover{border-color:#b9c5d4}
 textarea{min-height:104px;resize:vertical}
+/* A placeholder must not read as a value somebody supplied. The default
+   browser grey passes contrast, which is exactly the problem: it is the
+   same weight as real input and only a shade lighter. Italic carries the
+   distinction without leaning on colour, the same reason the burden state
+   is spelled out in words. */
+::placeholder{color:#697585;opacity:1;font-style:italic}
 :focus-visible{outline:2.5px solid var(--ink);outline-offset:2px}
 .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(168px,1fr))}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
@@ -234,6 +240,7 @@ footer p{margin:0 0 6px;max-width:var(--measure)}
   button{background:#e7edf5;color:#0f1621}
   button:hover{background:#fff}
   button.ghost{color:var(--ink)}
+  ::placeholder{color:#95a4b6}
   .drop{background:#131d2a}
   .note{background:#131d2a}
   input.read{background:#122a24}
@@ -1578,6 +1585,7 @@ function chatState(){
   });
   return {
     result: lastResult, shortlist: shortlist, form: f,
+    per_bed: !$("bed-note").classList.contains("hidden"),
     tab: $("tab-explore").getAttribute("aria-selected") === "true"
       ? "explore" : "check"
   };

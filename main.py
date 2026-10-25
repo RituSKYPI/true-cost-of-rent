@@ -16,6 +16,7 @@ import json
 import base64
 import hashlib
 import traceback
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
@@ -714,6 +715,20 @@ LISTING:
 CACHE_COLLECTION = "parse_cache"
 cache_stats = {"hits": 0, "misses": 0}
 
+# Nothing here is kept indefinitely. Firestore deletes a document once the
+# timestamp in its TTL field has passed, so this is enforced by the database
+# rather than by us remembering to run something.
+#
+# Thirty days for cached listings: rent changes, so a cached price older than
+# that is giving a stale answer anyway. Retention and correctness agree.
+# Ninety days for the anonymous usage rows, which carry nothing identifying.
+CACHE_DAYS = 30
+USAGE_DAYS = 90
+
+
+def expires_in(days):
+    return datetime.now(timezone.utc) + timedelta(days=days)
+
 
 def _cache_key(text, images):
     h = hashlib.sha256()
@@ -729,8 +744,10 @@ def cache_get(key):
     try:
         doc = db.collection(CACHE_COLLECTION).document(key).get()
         if doc.exists:
-            cache_stats["hits"] += 1
-            return doc.to_dict().get("parsed")
+            d = doc.to_dict()
+            if cache_is_live(d):
+                cache_stats["hits"] += 1
+                return d.get("parsed")
     except Exception:
         pass
     cache_stats["misses"] += 1
@@ -742,9 +759,22 @@ def cache_put(key, parsed):
         db.collection(CACHE_COLLECTION).document(key).set({
             "parsed": parsed,
             "at": firestore.SERVER_TIMESTAMP,
+            "expires_at": expires_in(CACHE_DAYS),
         })
     except Exception:
         pass
+
+
+def cache_is_live(doc):
+    """Belt and braces. Firestore's own deletion can lag by a day or so, and
+    a stale rent is exactly what this is meant to avoid serving."""
+    try:
+        exp = (doc or {}).get("expires_at")
+        if exp is None:
+            return False          # written before expiry existed, treat as old
+        return exp > datetime.now(timezone.utc)
+    except Exception:
+        return False
 
 
 def _json_from_model(raw):
@@ -759,6 +789,29 @@ def _json_from_model(raw):
             raw = raw.lstrip()[4:]
     m = re.search(r"\{.*\}", raw, re.S)
     return json.loads(m.group(0) if m else raw)
+
+
+def _salvage_reply(raw):
+    """A truncated or malformed model response must never be shown to the
+    person as raw JSON. Pull the reply string out of the wreckage if it is
+    there, and otherwise say nothing rather than showing machinery."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)', raw)
+    if m:
+        frag = m.group(1)
+        try:
+            frag = json.loads('"' + frag + '"')
+        except Exception:
+            frag = frag.replace('\\n', ' ').replace('\\"', '"')
+        frag = frag.strip()
+        if frag:
+            return frag
+    # No reply key anywhere and no sign of JSON: it answered in plain prose.
+    if "{" not in raw and '"reply"' not in raw:
+        return raw
+    return None
 
 
 def parse_listing_from_url(url):
@@ -1171,7 +1224,9 @@ def affordable_rent(income, bedrooms, state, included=None, commute=0,
 def healthz():
     return jsonify(status="ok", model=model_status, model_name=MODEL_NAME,
                    location=LOCATION, maps=bool(MAPS_API_KEY),
-                   hud=bool(HUD_TOKEN), cache=dict(cache_stats))
+                   hud=bool(HUD_TOKEN), cache=dict(cache_stats),
+                   retention_days={"parse_cache": CACHE_DAYS,
+                                   "usage": USAGE_DAYS})
 
 
 @app.route("/api/commute", methods=["POST"])
@@ -1420,7 +1475,7 @@ application. Those figures are final and correct.
 
 Return strict JSON, nothing else:
 
-{"reply": "what you say to them, 1 to 4 short sentences",
+{"reply": "what you say to them, 1 to 4 short sentences. Keep it under 60 words. Never write JSON, field names or code inside this string.",
  "set_fields": {"field_name": value, ...},
  "run": "analyse" or "explore" or null,
  "switch_tab": "check" or "explore" or null}
@@ -1442,7 +1497,17 @@ How to behave:
   bedrooms and the city. Do not describe the field to them, fill it.
 - income is MONTHLY after tax. A yearly figure must be divided by 12. "60k"
   is yearly, so 5000.
-- roommates is the total number of people splitting rent, including them.
+- roommates is the TOTAL number of people splitting the rent, including
+  them. Read CURRENT STATE for what it is now before you change it.
+  "What if I had a roommate" or "add a roommate" means ONE MORE than the
+  current value, not 2. If it is 4 now, they are asking about 5.
+- If CURRENT STATE says this listing is priced per bed, the rent field holds
+  the WHOLE UNIT price and roommates is already set to the number of beds so
+  that the share comes out right. Changing roommates on a per bed listing
+  changes what share of the whole apartment they pay, which is almost never
+  what they mean. If they ask about roommates on a per bed listing, explain
+  that each bed is leased separately so their share does not change, and do
+  not set the field.
 - Set run to "analyse" only when the check tab has both a rent and an income,
   either already in the state or because you just set them. Set it to
   "explore" only when there is somewhere to search and an income.
@@ -1565,6 +1630,12 @@ def api_chat():
         } for p in sl[:8]]
     f = state.get("form") or {}
     safe["which_tab_they_are_on"] = state.get("tab") or "check"
+    if state.get("per_bed"):
+        safe["this_listing_is_priced_per_bed"] = True
+        safe["what_that_means"] = (
+            "The rent field holds the whole unit price and roommates is set "
+            "to the number of beds. Their share is already correct. Do not "
+            "change roommates here.")
     safe["fields_already_filled"] = {k: v for k, v in f.items() if v}
     safe["fields_still_blank"] = [k for k, v in f.items() if not v]
     if not safe.get("this_place"):
@@ -1585,7 +1656,8 @@ def api_chat():
 
         cfg = types.GenerateContentConfig(
             system_instruction=CHAT_PROMPT + json.dumps(safe, indent=1),
-            max_output_tokens=700)
+            response_mime_type="application/json",
+            max_output_tokens=1400)
         resp = client.models.generate_content(
             model=MODEL_NAME, contents=history, config=cfg)
 
@@ -1593,9 +1665,11 @@ def api_chat():
         try:
             data = _json_from_model(raw)
         except Exception:
-            # It answered in prose instead of JSON. Still useful, just inert.
-            return jsonify(reply=raw or "I did not catch that. Try again.",
-                           set_fields={}, run=None, switch_tab=None)
+            # Truncated or malformed. Rescue the sentence, bin the machinery.
+            return jsonify(
+                reply=_salvage_reply(raw) or
+                "I lost my train of thought there. Ask me that again.",
+                set_fields={}, run=None, switch_tab=None)
 
         run = data.get("run")
         if run not in ("analyse", "explore"):
@@ -1604,10 +1678,22 @@ def api_chat():
         if tab not in ("check", "explore"):
             tab = None
 
-        return jsonify(
-            reply=(data.get("reply") or "").strip() or "Done.",
-            set_fields=clean_chat_fields(data.get("set_fields")),
-            run=run, switch_tab=tab)
+        fields = clean_chat_fields(data.get("set_fields"))
+        reply = (data.get("reply") or "").strip() or "Done."
+
+        # A prompt rule is a request. This is the guarantee. On a per bed
+        # listing the rent box holds the whole unit price and roommates is
+        # the bed count, so moving roommates silently changes what fraction
+        # of the apartment they are paying for. Refuse it in code and say so,
+        # rather than letting a confident sentence contradict what we did.
+        if state.get("per_bed") and "roommates" in fields:
+            fields.pop("roommates", None)
+            reply = ("Each bed in this place is leased separately, so your "
+                     "share does not change when someone moves in or out of "
+                     "the other rooms. I have left the numbers as they are.")
+
+        return jsonify(reply=reply, set_fields=fields,
+                       run=run, switch_tab=tab)
     except Exception as e:
         return jsonify(error=str(e)[:200]), 500
 
@@ -1869,6 +1955,7 @@ def api_analyze():
             "at": firestore.SERVER_TIMESTAMP,
             "burden_bucket": result["level"],
             "model_used": model_status == "ready",
+            "expires_at": expires_in(USAGE_DAYS),
         })
         return jsonify(result)
     except Exception as e:

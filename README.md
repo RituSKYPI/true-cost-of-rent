@@ -174,6 +174,12 @@ income, no address, no identifier.
 Screenshots go to the Gemini API to be read and a hash keyed copy is cached.
 Commute addresses go to the Routes API. Neither is tied to a person.
 
+Nothing is kept indefinitely. Both collections carry an `expires_at` field and
+a Firestore TTL policy deletes the document once it passes. Cached listings go
+at **30 days**, which is also about how long a rent figure stays worth
+trusting. The anonymous usage rows go at **90 days**. Deletion is enforced by
+the database, not by anyone remembering to run a cleanup.
+
 ## Accessibility
 
 Keyboard reachable throughout with a skip link and visible focus. Burden state

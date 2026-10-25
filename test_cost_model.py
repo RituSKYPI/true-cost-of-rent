@@ -566,5 +566,40 @@ class TestNothingIsInvented(unittest.TestCase):
         self.assertEqual(r["breakdown"]["commute"], 0)
 
 
+
+
+class SalvageReply(unittest.TestCase):
+    """A broken model response must never show the person raw JSON."""
+
+    def test_truncated_json_yields_the_sentence_not_the_braces(self):
+        raw = ('```json\n{\n "reply": "I updated the tool to 2 people '
+               'splitting the rent.",\n "set_fields": {\n  "roommates": 2\n },'
+               '\n "')
+        out = main._salvage_reply(raw)
+        self.assertEqual(out, "I updated the tool to 2 people splitting the rent.")
+        for junk in ('{', '}', 'set_fields', 'json'):
+            self.assertNotIn(junk, out)
+
+    def test_reply_cut_off_mid_word_still_returns_prose(self):
+        out = main._salvage_reply('{"reply": "The heat is the big unknown here')
+        self.assertEqual(out, "The heat is the big unknown here")
+
+    def test_plain_prose_passes_through(self):
+        out = main._salvage_reply("Press analyse and I will work it out.")
+        self.assertEqual(out, "Press analyse and I will work it out.")
+
+    def test_unsalvageable_returns_none_so_caller_uses_its_own_words(self):
+        for junk in ("{{{{", "", "   ", '{"set_fields": {"rent": 900}}'):
+            self.assertIsNone(main._salvage_reply(junk))
+
+    def test_no_output_ever_contains_a_field_name(self):
+        samples = ['{"reply": "ok", "set_fields": {"income": 5000}}',
+                   '{"set_fields": {"income": 5000}}',
+                   '```json\n{"reply": "fine"}\n```']
+        for raw in samples:
+            out = main._salvage_reply(raw) or ""
+            self.assertNotIn("set_fields", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
